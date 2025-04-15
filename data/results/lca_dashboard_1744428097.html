@@ -1,0 +1,75 @@
+
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>LCA Filing Dashboard</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    .dashboard { max-width: 1200px; margin: 0 auto; }
+                    .summary { display: flex; justify-content: space-between; margin-bottom: 20px; }
+                    .summary-card { background-color: #f8f9fa; border-radius: 5px; padding: 15px; width: 30%; }
+                    .success { color: green; }
+                    .error { color: red; }
+                    table { width: 100%; border-collapse: collapse; }
+                    th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+                    th { background-color: #f2f2f2; }
+                    tr:hover { background-color: #f5f5f5; }
+                </style>
+            </head>
+            <body>
+                <div class="dashboard">
+                    <h1>LCA Filing Dashboard</h1>
+                    <div class="summary">
+                        <div class="summary-card">
+                            <h3>Success Rate</h3>
+                            <p><span class="success">0.0%</span> (0/3)</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>Average Processing Time</h3>
+                            <p>0.0 seconds</p>
+                        </div>
+                        <div class="summary-card">
+                            <h3>Last Updated</h3>
+                            <p>2025-04-12 08:51:37</p>
+                        </div>
+                    </div>
+
+                    <h2>Filing Results</h2>
+                    <table>
+                        <tr>
+                            <th>ID</th>
+                            <th>Status</th>
+                            <th>Confirmation #</th>
+                            <th>Time</th>
+                            <th>Timestamp</th>
+                        </tr>
+            
+                    <tr>
+                        <td>1001</td>
+                        <td class="error">validation_failed</td>
+                        <td>N/A</td>
+                        <td>0.0s</td>
+                        <td>2025-04-12T08:51:37.906629</td>
+                    </tr>
+                
+                    <tr>
+                        <td>1002</td>
+                        <td class="error">validation_failed</td>
+                        <td>N/A</td>
+                        <td>0.0s</td>
+                        <td>2025-04-12T08:51:37.906700</td>
+                    </tr>
+                
+                    <tr>
+                        <td>1003</td>
+                        <td class="error">validation_failed</td>
+                        <td>N/A</td>
+                        <td>0.0s</td>
+                        <td>2025-04-12T08:51:37.906746</td>
+                    </tr>
+                
+                    </table>
+                </div>
+            </body>
+            </html>
+            

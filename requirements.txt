@@ -1,0 +1,29 @@
+# requirements.txt
+# Core dependencies
+playwright>=1.20.0
+openai>=1.0.0  # Updated to the new OpenAI API version
+pydantic>=1.9.0
+tenacity>=8.0.1
+
+# TOTP support
+pyotp>=2.8.0
+qrcode>=7.3.1
+pillow>=9.0.1  # Required for qrcode
+
+# Security
+cryptography>=38.0.0  # For encrypting sensitive data (optional)
+
+# Utilities
+aiohttp>=3.8.1
+pandas>=1.4.2
+matplotlib>=3.5.1
+pyyaml>=6.0
+
+# Testing
+pytest>=7.0.1
+pytest-asyncio>=0.18.3
+pytest-mock>=3.7.0
+
+# Documentation
+sphinx>=4.4.0
+sphinx-rtd-theme>=1.0.0

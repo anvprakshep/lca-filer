@@ -1,0 +1,44 @@
+{
+  "openai": {
+    "api_key": "",
+    "model": "gpt-4",
+    "temperature": 0.1
+  },
+  "browser": {
+    "headless": true,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36",
+    "viewport": {
+      "width": 1280,
+      "height": 800
+    },
+    "timeout": 60000
+  },
+  "flag_portal": {
+    "url": "https://flag.dol.gov/",
+    "credentials": {
+      "username": "anvprakshep@gmail.com",
+      "password": ""
+    }
+  },
+  "processing": {
+    "max_concurrent": 5,
+    "max_retries": 3,
+    "retry_delay": 5
+  },
+  "captcha": {
+    "service": "none",
+    "api_key": ""
+  },
+  "totp": {
+    "enabled": true,
+    "secrets": {
+      "anvprakshep@gmail.com": "RWUZESVWB3BLY6GHM5Z3PV3Y4LMCY4ZJ"
+    },
+    "issuer": "LCA_Automation",
+    "secret": "RWUZESVWB3BLY6GHM5Z3PV3Y4LMCY4ZJ"
+  },
+  "output": {
+    "results_dir": "data/results",
+    "log_dir": "logs"
+  }
+}

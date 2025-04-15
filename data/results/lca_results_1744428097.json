@@ -1,0 +1,29 @@
+[
+  {
+    "application_id": "1001",
+    "status": "validation_failed",
+    "timestamp": "2025-04-12T08:51:37.906629",
+    "steps_completed": [],
+    "error": "Missing credentials for FLAG portal",
+    "processing_time": 4.839897155761719e-05,
+    "completion_timestamp": "2025-04-12T08:51:37.906677"
+  },
+  {
+    "application_id": "1002",
+    "status": "validation_failed",
+    "timestamp": "2025-04-12T08:51:37.906700",
+    "steps_completed": [],
+    "error": "Missing credentials for FLAG portal",
+    "processing_time": 2.7418136596679688e-05,
+    "completion_timestamp": "2025-04-12T08:51:37.906728"
+  },
+  {
+    "application_id": "1003",
+    "status": "validation_failed",
+    "timestamp": "2025-04-12T08:51:37.906746",
+    "steps_completed": [],
+    "error": "Missing credentials for FLAG portal",
+    "processing_time": 2.7894973754882812e-05,
+    "completion_timestamp": "2025-04-12T08:51:37.906775"
+  }
+]
