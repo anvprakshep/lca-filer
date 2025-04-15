@@ -3,24 +3,39 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from playwright.async_api import Page
 
-from config.selectors import Selectors
 from utils.logger import get_logger
+from utils.screenshot_manager import ScreenshotManager
+from core.browser_manager import BrowserManager, ElementNotFoundError
 from ai.models import FieldDecision
 
 logger = get_logger(__name__)
 
 
 class FormFiller:
-    """Handles form filling operations."""
+    """Handles form filling operations with improved error handling and logging."""
 
-    def __init__(self, page: Page):
+    def __init__(self, page: Page, browser_manager: BrowserManager, screenshot_manager: ScreenshotManager):
         """
         Initialize form filler.
 
         Args:
             page: Playwright page
+            browser_manager: Browser manager for element handling
+            screenshot_manager: Screenshot manager for capturing form state
         """
         self.page = page
+        self.browser_manager = browser_manager
+        self.screenshot_manager = screenshot_manager
+
+        # XPath selectors for common field types
+        self.field_type_selectors = {
+            "text": ".//input[@type='text' or not(@type)]",
+            "textarea": ".//textarea",
+            "select": ".//select",
+            "radio": ".//input[@type='radio']",
+            "checkbox": ".//input[@type='checkbox']",
+            "autocomplete": ".//input[contains(@class, 'autocomplete') or contains(@role, 'combobox')]"
+        }
 
     async def fill_field(self, field_id: str, value: Any, field_type: str = "text") -> bool:
         """
@@ -35,29 +50,65 @@ class FormFiller:
             True if successful, False otherwise
         """
         try:
-            # Get selector for the field
-            selector = Selectors.get_field_selector(field_id)
+            logger.info(f"Filling field '{field_id}' with value: {value} (type: {field_type})")
+
+            # Get XPath selector for the field
+            if field_id.startswith('//'):
+                # Already an XPath
+                selector = field_id
+            else:
+                # Convert ID to XPath
+                selector = f"//*[@id='{field_id}' or @name='{field_id}']"
 
             # Handle different field types
             if field_type == "text" or field_type == "textarea":
-                await self.page.fill(selector, str(value))
+                await self.browser_manager.fill_element(self.page, selector, str(value))
 
             elif field_type == "dropdown" or field_type == "select":
-                await self.page.select_option(selector, value)
+                try:
+                    # Get the select element
+                    select_element = await self.browser_manager.find_element(self.page, selector)
+
+                    # Select option by value
+                    await self.page.select_option(selector, value)
+                except ElementNotFoundError:
+                    logger.warning(f"Select element not found with selector: {selector}")
+                    return False
 
             elif field_type == "radio":
-                radio_selector = f"{selector}[value='{value}']"
-                await self.page.click(radio_selector)
+                radio_selector = f"{selector}[@value='{value}']"
+                try:
+                    await self.browser_manager.click_element(self.page, radio_selector)
+                except ElementNotFoundError:
+                    # Try to find any radio with the same name and matching value
+                    group_selector = f"//input[@type='radio' and (@name='{field_id}' or @name='{field_id.replace('_', '-')}') and @value='{value}']"
+                    await self.browser_manager.click_element(self.page, group_selector)
 
             elif field_type == "checkbox":
-                if value in [True, "true", "True", "yes", "Yes", "1"]:
-                    await self.page.check(selector)
-                else:
-                    await self.page.uncheck(selector)
+                try:
+                    checkbox_element = await self.browser_manager.find_element(self.page, selector)
+
+                    # Get current checked state
+                    is_checked = await checkbox_element.is_checked()
+                    should_check = value in [True, "true", "True", "yes", "Yes", "1"]
+
+                    # Only click if we need to change the state
+                    if is_checked != should_check:
+                        await checkbox_element.click()
+                except ElementNotFoundError:
+                    logger.warning(f"Checkbox not found with selector: {selector}")
+                    return False
 
             elif field_type == "autocomplete":
-                await self.page.fill(selector, str(value))
+                # Fill the autocomplete field
+                await self.browser_manager.fill_element(self.page, selector, str(value))
+
+                # Wait for dropdown to appear
+                await asyncio.sleep(0.5)
+
+                # Press arrow down and enter to select the first option
                 await self.page.keyboard.press("ArrowDown")
+                await asyncio.sleep(0.2)
                 await self.page.keyboard.press("Enter")
 
             elif field_type == "date":
@@ -65,21 +116,35 @@ class FormFiller:
                 from datetime import datetime
                 if isinstance(value, datetime):
                     value = value.strftime("%m/%d/%Y")
-                await self.page.fill(selector, str(value))
+
+                await self.browser_manager.fill_element(self.page, selector, str(value))
 
             elif field_type == "dynamic_table":
                 # Handle dynamic tables (like additional worksites)
-                await self._fill_dynamic_table(field_id, value)
+                return await self._fill_dynamic_table(field_id, value)
 
             else:
                 logger.warning(f"Unsupported field type: {field_type} for {field_id}")
                 return False
 
-            logger.info(f"Filled {field_id} with value: {value}")
+            # Take screenshot of filled field for verification
+            await self.screenshot_manager.take_element_screenshot(
+                self.page,
+                selector,
+                f"field_{field_id}_filled"
+            )
+
+            logger.info(f"Successfully filled {field_id} with value: {value}")
             return True
+
+        except ElementNotFoundError as e:
+            logger.error(f"Element not found when filling field {field_id}: {str(e)}")
+            await self.screenshot_manager.take_screenshot(self.page, f"field_{field_id}_not_found")
+            return False
 
         except Exception as e:
             logger.error(f"Error filling field {field_id}: {str(e)}")
+            await self.screenshot_manager.take_screenshot(self.page, f"field_{field_id}_error")
             return False
 
     async def _fill_dynamic_table(self, table_id: str, rows_data: List[Dict[str, Any]]) -> bool:
@@ -100,83 +165,109 @@ class FormFiller:
 
             logger.info(f"Filling dynamic table {table_id} with {len(rows_data)} rows")
 
-            # Get table container
-            table_selector = Selectors.get_field_selector(table_id)
+            # Take screenshot before starting
+            await self.screenshot_manager.take_screenshot(self.page, f"table_{table_id}_before")
+
+            # Get the table selector
+            table_selector = f"//*[@id='{table_id}' or @name='{table_id}' or contains(@class, '{table_id}')]"
 
             # For each row, click the add button and fill the fields
             for i, row_data in enumerate(rows_data):
                 # Click add row button if not the first row (first row may already exist)
                 if i > 0:
-                    add_button_selector = f"{table_selector} button[aria-label='Add Row'], {table_selector} button:has-text('Add Worksite')"
-                    await self.page.click(add_button_selector)
-                    await self.page.wait_for_timeout(500)  # Short wait for row to be added
+                    # Try different add button selectors
+                    add_button_selectors = [
+                        f"{table_selector}//button[contains(@aria-label, 'Add') or contains(text(), 'Add')]",
+                        f"//button[contains(@aria-label, 'Add Row') or contains(text(), 'Add Worksite')]",
+                        f"//button[contains(@class, 'add-row') or contains(@class, 'add-worksite')]"
+                    ]
+
+                    add_button_clicked = False
+                    for selector in add_button_selectors:
+                        try:
+                            await self.browser_manager.click_element(self.page, selector)
+                            add_button_clicked = True
+                            break
+                        except ElementNotFoundError:
+                            continue
+
+                    if not add_button_clicked:
+                        logger.warning(f"Could not find add button for row {i + 1}")
+                        return False
+
+                    # Wait for row to be added
+                    await asyncio.sleep(0.5)
 
                 # Fill the fields for this row
-                for field_name, field_value in row_data.items():
-                    # Field ID for this row might follow a pattern like "additional_worksite_{i}_{field_name}"
-                    row_field_id = f"{table_id}_{i}_{field_name}"
-                    alt_field_id = f"{field_name}_{i}"  # Alternative format that might be used
+                row_success = await self._fill_table_row(table_id, i, row_data)
+                if not row_success:
+                    logger.warning(f"Failed to fill row {i + 1} in table {table_id}")
 
-                    # Try different selector patterns until one works
-                    field_selector = None
-                    for selector_pattern in [
-                        f"#{row_field_id}",
-                        f"#{alt_field_id}",
-                        f"{table_selector} tr:nth-child({i + 1}) [name*='{field_name}']",
-                        f"{table_selector} tr:nth-child({i + 1}) [id*='{field_name}']",
-                        f"{table_selector} tr:nth-child({i + 1}) input[placeholder*='{field_name}']",
-                    ]:
-                        if await self._is_element_visible(selector_pattern, timeout=1000):
-                            field_selector = selector_pattern
-                            break
+            # Take screenshot after filling
+            await self.screenshot_manager.take_screenshot(self.page, f"table_{table_id}_after")
 
-                    if field_selector:
-                        try:
-                            # Determine field type
-                            element_type = await self._get_element_type(field_selector)
-
-                            # Fill the field based on its type
-                            if element_type == "select":
-                                await self.page.select_option(field_selector, str(field_value))
-                            else:  # Default to text input
-                                await self.page.fill(field_selector, str(field_value))
-
-                            logger.info(f"Filled dynamic table field {field_name} in row {i + 1}")
-                        except Exception as e:
-                            logger.error(f"Error filling field {field_name} in row {i + 1}: {str(e)}")
-                    else:
-                        logger.warning(f"Could not find field {field_name} in row {i + 1}")
-
+            logger.info(f"Successfully filled dynamic table {table_id}")
             return True
 
         except Exception as e:
             logger.error(f"Error filling dynamic table {table_id}: {str(e)}")
+            await self.screenshot_manager.take_screenshot(self.page, f"table_{table_id}_error")
             return False
 
-    async def _get_element_type(self, selector: str) -> str:
+    async def _fill_table_row(self, table_id: str, row_index: int, row_data: Dict[str, Any]) -> bool:
         """
-        Get the type of an element.
+        Fill a single row in a dynamic table.
 
         Args:
-            selector: CSS selector
+            table_id: ID of the table
+            row_index: Index of the row (0-based)
+            row_data: Data for the row
 
         Returns:
-            Element type ("select", "checkbox", "text", etc.)
+            True if successful, False otherwise
         """
-        try:
-            return await self.page.evaluate(f"""() => {{
-                const element = document.querySelector("{selector}");
-                if (!element) return "unknown";
+        success = True
+        table_selector = f"//*[@id='{table_id}' or @name='{table_id}' or contains(@class, '{table_id}')]"
 
-                if (element.tagName.toLowerCase() === "select") return "select";
-                if (element.tagName.toLowerCase() === "textarea") return "textarea";
-                if (element.tagName.toLowerCase() === "input") return element.type || "text";
+        # Try various patterns for row fields
+        for field_name, field_value in row_data.items():
+            # Try different selector patterns
+            field_selector_patterns = [
+                # Pattern 1: Field in specific row using ID
+                f"{table_selector}//tr[{row_index + 1}]//*[@id='{table_id}_{row_index}_{field_name}' or @id='{field_name}_{row_index}']",
+                # Pattern 2: Field in specific row by attribute containing field name
+                f"{table_selector}//tr[{row_index + 1}]//*[contains(@name, '{field_name}') or contains(@id, '{field_name}')]",
+                # Pattern 3: Generic row + column pattern
+                f"{table_selector}//tr[{row_index + 1}]//td[*[contains(@placeholder, '{field_name}') or contains(@aria-label, '{field_name}')]]//input",
+                # Pattern 4: Any input in the row where label contains field name
+                f"{table_selector}//tr[{row_index + 1}]//label[contains(text(), '{field_name}')]//following::input[1]"
+            ]
 
-                return element.tagName.toLowerCase();
-            }}""")
-        except Exception as e:
-            logger.debug(f"Error getting element type: {str(e)}")
-            return "text"  # Default to text if can't determine type
+            field_found = False
+            for selector in field_selector_patterns:
+                try:
+                    if await self.browser_manager.is_element_visible(self.page, selector, timeout=1000):
+                        # Determine field type
+                        element = await self.browser_manager.find_element(self.page, selector)
+                        tag_name = await element.evaluate("el => el.tagName.toLowerCase()")
+
+                        if tag_name == "select":
+                            await self.page.select_option(selector, str(field_value))
+                        else:
+                            await self.browser_manager.fill_element(self.page, selector, str(field_value))
+
+                        logger.info(f"Filled table {table_id} row {row_index + 1} field {field_name}")
+                        field_found = True
+                        break
+                except Exception as e:
+                    logger.debug(f"Error with selector {selector}: {str(e)}")
+                    continue
+
+            if not field_found:
+                logger.warning(f"Could not find field {field_name} in row {row_index + 1}")
+                success = False
+
+        return success
 
     async def fill_section(self, section: Dict[str, Any], decisions: List[FieldDecision]) -> Dict[str, Any]:
         """
@@ -190,6 +281,9 @@ class FormFiller:
             Dictionary with results (success, errors)
         """
         logger.info(f"Filling section: {section['name']}")
+
+        # Take screenshot before filling section
+        await self.screenshot_manager.take_screenshot(self.page, f"section_{section['name']}_before")
 
         results = {
             "section": section["name"],
@@ -238,38 +332,7 @@ class FormFiller:
             conditional = field_def.get("conditional")
             if conditional:
                 # Skip this field if its conditional parent doesn't have the expected value
-                should_skip = False
-                for parent_field, expected_value in conditional.items():
-                    parent_selector = Selectors.get_field_selector(parent_field)
-                    parent_field_def = next((f for f in section["fields"] if f["id"] == parent_field), None)
-
-                    if not parent_field_def:
-                        continue
-
-                    parent_type = parent_field_def.get("type", "text")
-
-                    if parent_type == "radio" or parent_type == "checkbox":
-                        try:
-                            # For radio buttons, check if the expected value is selected
-                            radio_selector = f"{parent_selector}[value='{expected_value}']"
-                            is_checked = await self.page.is_checked(radio_selector)
-                            if not is_checked:
-                                should_skip = True
-                                break
-                        except:
-                            should_skip = True
-                            break
-                    else:
-                        try:
-                            # For other inputs, check if the value matches
-                            actual_value = await self.page.input_value(parent_selector)
-                            if actual_value != expected_value:
-                                should_skip = True
-                                break
-                        except:
-                            should_skip = True
-                            break
-
+                should_skip = await self._check_conditional_field(conditional)
                 if should_skip:
                     logger.info(f"Skipping conditional field {field_id}")
                     continue
@@ -298,8 +361,61 @@ class FormFiller:
                     results["fields_failed"] += 1
                     results["errors"].append("Failed to fill additional worksites")
 
+        # Take screenshot after filling section
+        await self.screenshot_manager.take_screenshot(self.page, f"section_{section['name']}_after")
+
         logger.info(f"Section {section['name']} filled: {results['fields_filled']}/{results['fields_total']} fields")
         return results
+
+    async def _check_conditional_field(self, conditional: Dict[str, Any]) -> bool:
+        """
+        Check if a conditional field should be skipped.
+
+        Args:
+            conditional: Dictionary mapping parent fields to expected values
+
+        Returns:
+            True if field should be skipped, False otherwise
+        """
+        for parent_field, expected_value in conditional.items():
+            try:
+                parent_selector = f"//*[@id='{parent_field}' or @name='{parent_field}']"
+
+                try:
+                    # First check if the element exists
+                    parent_element = await self.browser_manager.find_element(self.page, parent_selector)
+                except ElementNotFoundError:
+                    # Parent field not found, skip this conditional field
+                    return True
+
+                # Get element type
+                tag_name = await parent_element.evaluate("el => el.tagName.toLowerCase()")
+                input_type = await parent_element.evaluate("el => el.type || ''")
+
+                if input_type == "radio" or input_type == "checkbox":
+                    # For radio/checkbox, check specific option
+                    option_selector = f"{parent_selector}[@value='{expected_value}']"
+                    try:
+                        option_element = await self.browser_manager.find_element(self.page, option_selector)
+                        is_checked = await option_element.is_checked()
+                        if not is_checked:
+                            return True
+                    except ElementNotFoundError:
+                        # Option not found, skip
+                        return True
+                else:
+                    # For other inputs, get value and compare
+                    actual_value = await parent_element.input_value()
+                    if actual_value != expected_value:
+                        return True
+
+            except Exception as e:
+                logger.warning(f"Error checking conditional field with parent {parent_field}: {str(e)}")
+                # If there's an error checking condition, skip the field to be safe
+                return True
+
+        # All conditions satisfied, don't skip
+        return False
 
     async def handle_worksite_section(self, application_data: Dict[str, Any]) -> bool:
         """
@@ -314,15 +430,43 @@ class FormFiller:
         try:
             logger.info("Handling worksite section with special logic for multiple worksites")
 
+            # Take screenshot before handling
+            await self.screenshot_manager.take_screenshot(self.page, "worksite_section_before")
+
             # Check if application has multiple worksites
             has_multiple_worksites = application_data.get("multiple_worksites", False)
             additional_worksites = application_data.get("additional_worksites", [])
 
             # Fill the "multiple worksites" radio button
             multiple_worksites_value = "Yes" if has_multiple_worksites else "No"
-            multiple_worksites_selector = Selectors.get_field_selector("multiple_worksites")
-            radio_selector = f"{multiple_worksites_selector}[value='{multiple_worksites_value}']"
-            await self.page.click(radio_selector)
+            radio_selector = f"//input[@type='radio' and (@id='multiple_worksites' or @name='multiple_worksites') and @value='{multiple_worksites_value}']"
+
+            try:
+                await self.browser_manager.click_element(self.page, radio_selector)
+                logger.info(f"Selected 'multiple_worksites' option: {multiple_worksites_value}")
+            except ElementNotFoundError:
+                # Try alternate selectors
+                alternate_selectors = [
+                    f"//input[@type='radio' and contains(@id, 'multiple') and contains(@id, 'worksite') and @value='{multiple_worksites_value}']",
+                    f"//input[@type='radio' and contains(@name, 'multiple') and contains(@name, 'worksite') and @value='{multiple_worksites_value}']",
+                    f"//label[contains(text(), 'multiple worksite')]//*[@type='radio' and @value='{multiple_worksites_value}']"
+                ]
+
+                for selector in alternate_selectors:
+                    try:
+                        await self.browser_manager.click_element(self.page, selector)
+                        logger.info(
+                            f"Selected 'multiple_worksites' option using alternate selector: {multiple_worksites_value}")
+                        break
+                    except ElementNotFoundError:
+                        continue
+                else:
+                    logger.error("Could not find multiple worksites radio button")
+                    await self.screenshot_manager.take_screenshot(self.page, "multiple_worksites_not_found")
+                    return False
+
+            # Wait for UI to update after selection
+            await asyncio.sleep(1)
 
             # Fill primary worksite fields
             worksite_data = application_data.get("worksite", {})
@@ -332,12 +476,18 @@ class FormFiller:
 
             # If has multiple worksites, fill the additional worksites
             if has_multiple_worksites and additional_worksites:
+                logger.info(f"Filling {len(additional_worksites)} additional worksites")
                 await self._fill_dynamic_table("additional_worksites", additional_worksites)
 
+            # Take screenshot after handling
+            await self.screenshot_manager.take_screenshot(self.page, "worksite_section_after")
+
+            logger.info("Worksite section handled successfully")
             return True
 
         except Exception as e:
             logger.error(f"Error handling worksite section: {str(e)}")
+            await self.screenshot_manager.take_screenshot(self.page, "worksite_section_error")
             return False
 
     async def get_form_state(self) -> Dict[str, Any]:
@@ -350,11 +500,13 @@ class FormFiller:
         form_state = {}
 
         try:
+            logger.info("Getting current form state")
+
             # Get all input elements
             input_selectors = [
-                "input:not([type='hidden'])",
-                "select",
-                "textarea"
+                "//input[not(@type='hidden')]",
+                "//select",
+                "//textarea"
             ]
 
             for selector in input_selectors:
@@ -440,51 +592,9 @@ class FormFiller:
             except Exception as e:
                 logger.debug(f"Error getting dynamic table state: {str(e)}")
 
+            logger.info(f"Form state retrieved with {len(form_state)} fields")
             return form_state
 
         except Exception as e:
             logger.error(f"Error getting form state: {str(e)}")
             return {}
-
-    async def submit_form(self, button_selector: str) -> bool:
-        """
-        Submit a form by clicking a button.
-
-        Args:
-            button_selector: CSS selector for the submit button
-
-        Returns:
-            True if submission was successful, False otherwise
-        """
-        try:
-            # Check if button exists
-            if not await self._is_element_visible(button_selector):
-                logger.error(f"Submit button not found: {button_selector}")
-                return False
-
-            # Click the button
-            await self.page.click(button_selector)
-
-            # Wait for navigation to complete
-            await self.page.wait_for_load_state("networkidle")
-
-            # Check for error messages
-            error_selector = Selectors.get("error_message")
-            if await self._is_element_visible(error_selector, timeout=2000):
-                error_text = await self.page.text_content(error_selector)
-                logger.warning(f"Form submission error: {error_text}")
-                return False
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Error submitting form: {str(e)}")
-            return False
-
-    async def _is_element_visible(self, selector: str, timeout: int = 5000) -> bool:
-        """Check if an element is visible on the page."""
-        try:
-            await self.page.wait_for_selector(selector, state="visible", timeout=timeout)
-            return True
-        except:
-            return False

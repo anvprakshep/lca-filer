@@ -1,6 +1,7 @@
 # lca_filer.py
 import asyncio
 import time
+import uuid
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import os
@@ -13,7 +14,8 @@ from core.error_handler import ErrorHandler
 from ai.llm_client import LLMClient
 from ai.data_validator import DataValidator
 from ai.decision_maker import DecisionMaker
-from utils.logger import get_logger
+from utils.logger import get_logger, set_context, clear_context, get_application_logger
+from utils.screenshot_manager import ScreenshotManager
 from utils.reporting import Reporter
 from utils.authenticator import TwoFactorAuth
 from config.form_structure import FormStructure
@@ -31,6 +33,12 @@ class LCAFiler:
         Args:
             config_path: Path to configuration file
         """
+        # Generate a unique generation ID for this batch
+        self.generation_id = f"gen_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+        # Set logging context for global operations
+        set_context(generation_id=self.generation_id)
+
         # Load configuration
         self.config = Config(config_path)
 
@@ -40,6 +48,7 @@ class LCAFiler:
         self.data_validator = DataValidator(self.llm_client)
         self.decision_maker = DecisionMaker(self.llm_client)
         self.reporter = Reporter(self.config.get("output"))
+        self.screenshot_manager = ScreenshotManager()
 
         # Initialize two-factor authentication if enabled
         self.two_factor_auth = None
@@ -50,6 +59,8 @@ class LCAFiler:
 
         # Results storage
         self.results = []
+
+        logger.info(f"LCAFiler initialized with generation ID: {self.generation_id}")
 
     async def initialize(self) -> bool:
         """
@@ -72,6 +83,10 @@ class LCAFiler:
         try:
             # Close browser
             await self.browser_manager.close()
+
+            # Clear logging context
+            clear_context()
+
             logger.info("LCAFiler shut down")
         except Exception as e:
             logger.error(f"Error shutting down LCAFiler: {str(e)}")
@@ -86,7 +101,8 @@ class LCAFiler:
         Returns:
             List of results
         """
-        logger.info(f"Starting batch processing of {len(applications)} applications")
+        logger.info(
+            f"Starting batch processing of {len(applications)} applications with generation ID: {self.generation_id}")
 
         # Initialize results
         self.results = []
@@ -116,7 +132,8 @@ class LCAFiler:
                     "application_id": app_id,
                     "status": "error",
                     "error": str(result),
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "generation_id": self.generation_id
                 })
             else:
                 processed_results.append(result)
@@ -165,10 +182,19 @@ class LCAFiler:
             Result dictionary
         """
         app_id = application_data.get("id", f"app_{int(time.time())}")
-        print("Filing LCA with ID {}".format(app_id))
+
+        # Set application-specific context for logging
+        set_context(generation_id=self.generation_id, application_id=app_id)
+
+        # Get application-specific logger that writes to both global and application logs
+        app_logger = get_application_logger(__name__, self.generation_id, app_id)
+
+        app_logger.info(f"Starting LCA filing for application {app_id} in generation {self.generation_id}")
+
         start_time = time.time()
         result = {
             "application_id": app_id,
+            "generation_id": self.generation_id,
             "status": "started",
             "timestamp": datetime.now().isoformat(),
             "steps_completed": []
@@ -179,55 +205,53 @@ class LCAFiler:
 
         try:
             # Validate application data
+            app_logger.info("Validating application data")
             validated_data, validation_notes = await self.data_validator.validate(application_data)
-            print("Validating application data")
-            print("Validated Data: ", validated_data)
-            print("Validated Data: ", validation_notes)
+
             if not validated_data:
+                app_logger.error(f"Application validation failed: {validation_notes}")
                 result["status"] = "validation_failed"
                 result["error"] = validation_notes
                 return result
 
-            # result["validation_notes"] = validation_notes
+            result["validation_notes"] = validation_notes
+            app_logger.info("Application data validated successfully")
 
-            print("Result: {}".format(result))
             # Create a new page
             page = await self.browser_manager.new_page()
+            app_logger.info("Browser page created")
 
             # Initialize page-specific components
-            print("Page opened")
-            print("self.config", self.config.get('flag_portal'))
-            print("Two Factor Authentication", self.two_factor_auth)
-            navigation = Navigation(page, self.config.get("flag_portal"), self.two_factor_auth)
-            print("Navigation opened")
-            form_filler = FormFiller(page)
-            print("FormFiller opened")
-            error_handler = ErrorHandler(page, self.llm_client)
+            navigation = Navigation(page, self.config.get("flag_portal"), self.browser_manager, self.two_factor_auth)
+            form_filler = FormFiller(page, self.browser_manager, self.screenshot_manager)
+            error_handler = ErrorHandler(page, self.llm_client, self.browser_manager, self.screenshot_manager)
 
             # Navigate to FLAG portal
+            app_logger.info("Navigating to FLAG portal")
             if not await navigation.goto_flag_portal():
                 result["status"] = "navigation_failed"
                 result["error"] = "Failed to navigate to FLAG portal"
                 return result
 
             result["steps_completed"].append("navigation")
+            app_logger.info("Successfully navigated to FLAG portal")
 
             # Login with 2FA if needed
-            print("Preparing Login")
+            app_logger.info("Attempting login to FLAG portal")
             credentials = application_data.get("credentials", self.config.get("flag_portal", "credentials", default={}))
 
             # Check if the username has a TOTP secret configured
             username = credentials.get("username", "")
             if username and self.two_factor_auth and not self.config.has_totp_secret(username):
-                logger.warning(f"No TOTP secret found for username: {username}")
+                app_logger.warning(f"No TOTP secret found for username: {username}")
 
                 # Check if TOTP secret is provided in application data
                 if "totp_secret" in application_data:
                     # Add the secret to the configuration
                     self.config.set_totp_secret(username, application_data["totp_secret"])
-                    logger.info(f"Added TOTP secret for {username} from application data")
+                    app_logger.info(f"Added TOTP secret for {username} from application data")
                 else:
-                    logger.warning(f"2FA is enabled but no TOTP secret provided for {username}")
+                    app_logger.warning(f"2FA is enabled but no TOTP secret provided for {username}")
 
             if not await navigation.login(credentials):
                 result["status"] = "login_failed"
@@ -235,31 +259,40 @@ class LCAFiler:
                 return result
 
             result["steps_completed"].append("login")
+            app_logger.info("Successfully logged in to FLAG portal")
 
             # Navigate to new LCA form
+            app_logger.info("Navigating to new LCA form")
             if not await navigation.navigate_to_new_lca():
                 result["status"] = "navigation_failed"
                 result["error"] = "Failed to navigate to new LCA form"
                 return result
 
+            time.sleep(100000)
+
             result["steps_completed"].append("new_lca_navigation")
+            app_logger.info("Successfully navigated to new LCA form")
 
             # Select H-1B form type
+            app_logger.info("Selecting H-1B form type")
             if not await navigation.select_form_type("H-1B"):
                 result["status"] = "form_selection_failed"
                 result["error"] = "Failed to select H-1B form type"
                 return result
 
             result["steps_completed"].append("form_type_selection")
+            app_logger.info("Successfully selected H-1B form type")
 
             # Get AI decisions for the entire form
+            app_logger.info("Getting AI decisions for form filling")
             lca_decision = await self.decision_maker.make_decisions(validated_data)
 
             # If human review is required, log the reasons
             if lca_decision.requires_human_review:
                 result["requires_human_review"] = True
                 result["review_reasons"] = lca_decision.review_reasons
-                logger.warning(f"Application {app_id} requires human review: {', '.join(lca_decision.review_reasons)}")
+                app_logger.warning(
+                    f"Application {app_id} requires human review: {', '.join(lca_decision.review_reasons)}")
 
             # Process each section of the form
             for section_obj in lca_decision.form_sections:
@@ -271,60 +304,69 @@ class LCAFiler:
                                     if s["name"] == section_name), None)
 
                 if not section_def:
-                    logger.warning(f"Section definition not found for {section_name}")
+                    app_logger.warning(f"Section definition not found for {section_name}")
                     continue
 
-                logger.info(f"Processing section: {section_name} for application {app_id}")
+                app_logger.info(f"Processing section: {section_name}")
+
+                # Check for unexpected navigation issues before proceeding
+                await navigation.handle_unexpected_navigation()
 
                 # Special handling for worksite section with multiple worksites
                 if "worksite" in section_name.lower() and validated_data.get("multiple_worksites", False):
-                    logger.info("Using special handling for multiple worksites section")
+                    app_logger.info("Using special handling for multiple worksites section")
                     await form_filler.handle_worksite_section(validated_data)
                 else:
                     # Fill the section normally
                     section_result = await form_filler.fill_section(section_def, decisions)
+                    app_logger.info(
+                        f"Section {section_name} fill result: {section_result['fields_filled']}/{section_result['fields_total']} fields filled")
 
                 # Check for errors
                 errors = await error_handler.detect_errors()
                 if errors:
+                    app_logger.warning(f"Detected {len(errors)} errors in section {section_name}")
+
                     # Try to fix errors
                     form_state = await form_filler.get_form_state()
                     fixed = await error_handler.fix_errors(errors, form_state)
 
                     if not fixed:
-                        logger.warning(f"Could not fix all errors in section {section_name}")
+                        app_logger.warning(f"Could not fix all errors in section {section_name}")
                         # Continue anyway, might be able to proceed
 
                 # Save and continue to next section
+                app_logger.info(f"Saving section {section_name} and continuing")
                 if not await navigation.save_and_continue():
-                    logger.warning(f"Error saving section {section_name}")
-                    # Take screenshot for debugging
-                    await self.browser_manager.take_screenshot(page, f"save_error_{section_name}")
+                    app_logger.warning(f"Error saving section {section_name}")
                     # Try to continue anyway
 
                 result["steps_completed"].append(f"section_{section_name}")
+                app_logger.info(f"Completed section: {section_name}")
 
             # Submit the final form
+            app_logger.info("Submitting final LCA form")
             if not await navigation.submit_final():
                 result["status"] = "submission_failed"
                 result["error"] = "Failed to submit LCA form"
                 return result
 
             result["steps_completed"].append("submission")
+            app_logger.info("LCA form submitted successfully")
 
             # Get confirmation number
             confirmation_number = await navigation.get_confirmation_number()
             if confirmation_number:
                 result["confirmation_number"] = confirmation_number
                 result["status"] = "success"
-                logger.info(
-                    f"Successfully filed LCA for application {app_id}, confirmation number: {confirmation_number}")
+                app_logger.info(f"Successfully filed LCA, confirmation number: {confirmation_number}")
             else:
                 result["status"] = "confirmation_failed"
                 result["error"] = "Failed to get confirmation number"
+                app_logger.error("Failed to get confirmation number after submission")
 
         except Exception as e:
-            logger.error(f"Error filing LCA for application {app_id}: {str(e)}")
+            app_logger.error(f"Error filing LCA: {str(e)}")
             result["status"] = "error"
             result["error"] = str(e)
 
@@ -332,6 +374,11 @@ class LCAFiler:
             # Calculate processing time
             result["processing_time"] = time.time() - start_time
             result["completion_timestamp"] = datetime.now().isoformat()
+
+            # Clear the application-specific context
+            clear_context()
+
+            app_logger.info(f"LCA filing finished with status: {result['status']}")
 
         return result
 
@@ -377,16 +424,21 @@ class LCAFiler:
                 logger.warning("No results to generate reports")
                 return
 
+            # Create directory for this generation if it doesn't exist
+            report_dir = f"{self.config.get('output', 'results_dir', default='data/results')}/{self.generation_id}"
+            os.makedirs(report_dir, exist_ok=True)
+
             # Save results to JSON
-            results_path = self.reporter.save_results(self.results)
+            results_path = self.reporter.save_results(self.results, output_path=f"{report_dir}/lca_results.json")
 
             # Generate dashboard
-            dashboard_path = self.reporter.generate_dashboard(self.results)
+            dashboard_path = self.reporter.generate_dashboard(self.results,
+                                                              output_path=f"{report_dir}/lca_dashboard.html")
 
             # Generate statistics
-            stats = self.reporter.generate_statistics(self.results)
+            stats = self.reporter.generate_statistics(self.results, output_dir=f"{report_dir}/stats")
 
-            logger.info("Reports generated successfully")
+            logger.info(f"Reports generated successfully in {report_dir}")
 
         except Exception as e:
             logger.error(f"Error generating reports: {str(e)}")

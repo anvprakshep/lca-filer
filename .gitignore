@@ -39,3 +39,5 @@ tmtagsHistory
 *.sublime-workspace
 .bundle
 python
+screenshots/
+config.json
