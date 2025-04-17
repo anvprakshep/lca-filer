@@ -36,6 +36,7 @@ async def file_lca_with_dol_mfa() -> None:
     application = {
         "id": "totp_example_app_001",
         "credentials": {
+
             "username": username,
             "password": password,
             "totp_secret": dol_totp_secret  # Include the TOTP secret in credentials
