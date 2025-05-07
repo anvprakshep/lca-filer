@@ -1,5 +1,6 @@
 # core/browser_manager.py
 import asyncio
+import threading
 from typing import Dict, Any, Optional, Tuple, List, Union
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page, TimeoutError, Error
 
@@ -28,43 +29,51 @@ class BrowserManager:
         self.browser = None
         self.context = None
         self.screenshot_manager = None  # Will be set in initialize()
+        self._lock = threading.Lock()  # Add this line
 
         # Default timeout in milliseconds
         self.default_timeout = config.get("timeout", 30000)
 
-    async def initialize(self) -> None:
+    async def initialize(self) -> bool:
         """Initialize browser, context and screenshot manager."""
-        try:
-            logger.info("Initializing browser manager")
+        with self._lock:  # Add this line
+            try:
+                # Check if already initialized
+                if self.browser and self.context:
+                    logger.info("Browser manager already initialized")
+                    return True
 
-            # Create screenshot manager
-            self.screenshot_manager = ScreenshotManager()
+                logger.info("Initializing browser manager")
 
-            # Start playwright
-            playwright = await async_playwright().start()
+                # Create screenshot manager
+                self.screenshot_manager = ScreenshotManager()
 
-            # Launch browser
-            self.browser = await playwright.chromium.launch(
-                headless=self.config.get("headless", True)
-            )
+                # Start playwright
+                playwright = await async_playwright().start()
 
-            # Create context with custom settings
-            self.context = await self.browser.new_context(
-                viewport=self.config.get("viewport", {"width": 1280, "height": 800}),
-                user_agent=self.config.get("user_agent", ""),
-                locale=self.config.get("locale", "en-US"),
-                timezone_id=self.config.get("timezone_id", "America/New_York")
-            )
+                # Launch browser
+                self.browser = await playwright.chromium.launch(
+                    headless=self.config.get("headless", True)
+                )
 
-            # Set default timeout
-            self.context.set_default_timeout(self.default_timeout)
+                # Create context with custom settings
+                self.context = await self.browser.new_context(
+                    viewport=self.config.get("viewport", {"width": 1280, "height": 800}),
+                    user_agent=self.config.get("user_agent", ""),
+                    locale=self.config.get("locale", "en-US"),
+                    timezone_id=self.config.get("timezone_id", "America/New_York")
+                )
 
-            logger.info("Browser and context initialized successfully")
+                # Set default timeout
+                self.context.set_default_timeout(self.default_timeout)
 
-        except Exception as e:
-            log_exception(e, __name__)
-            logger.error(f"Failed to initialize browser: {str(e)}")
-            raise
+                logger.info("Browser and context initialized successfully")
+                return True
+
+            except Exception as e:
+                log_exception(e, __name__)
+                logger.error(f"Failed to initialize browser: {str(e)}")
+                return False
 
     async def new_page(self) -> Page:
         """
@@ -90,15 +99,16 @@ class BrowserManager:
 
     async def close(self) -> None:
         """Close browser and release resources."""
-        try:
-            if self.browser:
-                await self.browser.close()
-                self.browser = None
-                self.context = None
-                logger.info("Browser closed successfully")
-        except Exception as e:
-            log_exception(e, __name__)
-            logger.error(f"Error closing browser: {str(e)}")
+        with self._lock:  # Add this line
+            try:
+                if self.browser:
+                    await self.browser.close()
+                    self.browser = None
+                    self.context = None
+                    logger.info("Browser closed successfully")
+            except Exception as e:
+                log_exception(e, __name__)
+                logger.error(f"Error closing browser: {str(e)}")
 
     async def find_element(self,
                            page: Page,

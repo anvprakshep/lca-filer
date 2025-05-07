@@ -79,20 +79,39 @@ class Navigation:
         """
         try:
             url = self.config.get("url", "https://flag.dol.gov/")
-            await self.page.goto(url)
 
-            # Wait for page to load
-            await self.page.wait_for_load_state("networkidle")
+            # Check if page is still valid
+            if self.page.is_closed():
+                logger.error("Page is closed before navigation")
+                return False
+
+            # Add explicit wait before navigation
+            await asyncio.sleep(1)
+
+            # Use a longer timeout for initial navigation (30 seconds)
+            await self.page.goto(url, timeout=30000, wait_until="load")
+
+            # Wait for page to fully load
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception as e:
+                logger.warning(f"Timeout waiting for networkidle (continuing anyway): {str(e)}")
 
             # Take screenshot
-            await self.screenshot_manager.take_screenshot(self.page, "flag_portal_home")
+            try:
+                await self.screenshot_manager.take_screenshot(self.page, "flag_portal_home")
+            except Exception as e:
+                logger.warning(f"Error taking screenshot after navigation: {str(e)}")
 
             logger.info(f"Navigated to FLAG portal: {url}")
             return True
 
         except Exception as e:
             logger.error(f"Error navigating to FLAG portal: {str(e)}")
-            await self.screenshot_manager.take_screenshot(self.page, "flag_portal_navigation_error")
+            try:
+                await self.screenshot_manager.take_screenshot(self.page, "flag_portal_navigation_error")
+            except Exception as screenshot_e:
+                logger.warning(f"Could not take error screenshot: {str(screenshot_e)}")
             return False
 
     async def login(self, credentials: Dict[str, str]) -> bool:
@@ -106,72 +125,75 @@ class Navigation:
             True if login successful, False otherwise
         """
         try:
-            # Look for the specific Sign In button using the exact XPath
+            # Look for the Sign In button
             logger.info("Looking for Sign In button on FLAG portal")
+            await self.screenshot_manager.take_screenshot(self.page, "before_signin")
 
-            # First try the exact XPath
-            try:
-                sign_in_button = await self.browser_manager.find_element(
-                    self.page,
-                    self.selectors["sign_in_button"],
-                    timeout=5000
-                )
-                logger.info("Found Sign In button using exact XPath")
-                await sign_in_button.click()
-            except ElementNotFoundError:
-                # Try alternate selector as fallback
+            # First try the exact XPath, then fallback to alternatives
+            sign_in_clicked = False
+            sign_in_selectors = [
+                self.selectors["sign_in_button"],
+                self.selectors["sign_in_button_alt"],
+                "//button[contains(text(), 'Sign In')]",
+                "//a[contains(text(), 'Sign In')]",
+                "//button[contains(@class, 'sign-in')]",
+                "//a[contains(@class, 'sign-in')]"
+            ]
+
+            for selector in sign_in_selectors:
                 try:
-                    sign_in_button = await self.browser_manager.find_element(
-                        self.page,
-                        self.selectors["sign_in_button_alt"],
-                        timeout=5000
-                    )
-                    logger.info("Found Sign In button using alternate selector")
-                    await sign_in_button.click()
-                except ElementNotFoundError:
-                    logger.warning("Could not find Sign In button on FLAG portal")
-                    await self.screenshot_manager.take_screenshot(self.page, "sign_in_button_not_found")
-                    # We might already be at the login page, so continue
+                    if await self.browser_manager.is_element_visible(self.page, selector, timeout=2000):
+                        await self.browser_manager.click_element(self.page, selector)
+                        sign_in_clicked = True
+                        logger.info(f"Clicked Sign In button using selector: {selector}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Error clicking sign-in with selector {selector}: {str(e)}")
+                    continue
 
-            # Wait for redirect to Login.gov
+            if not sign_in_clicked:
+                logger.warning("Could not find or click Sign In button - we might already be at login page")
+                # Continue anyway - we might already be at the login page
+
+            # Wait for page load
             await self.page.wait_for_load_state("networkidle")
             await self.screenshot_manager.take_screenshot(self.page, "after_signin_click")
 
-            # Check if we're redirected to Login.gov
-            current_url = self.page.url
-            if "login.gov" in current_url:
-                logger.info(f"Redirected to Login.gov: {current_url}")
-            else:
-                logger.warning(f"Expected redirect to Login.gov, but current URL is: {current_url}")
-
-            # Wait for login form to appear
+            # Check if we need to log in - look for the login form
+            email_field_visible = False
             try:
-                email_field = await self.browser_manager.find_element(
-                    self.page,
-                    self.selectors["login_gov_email"],
-                    timeout=10000
+                email_field_visible = await self.browser_manager.is_element_visible(
+                    self.page, self.selectors["login_gov_email"], timeout=5000
                 )
-                logger.info("Found Login.gov email field")
-            except ElementNotFoundError:
-                # Check if we're already logged in and at the dashboard
-                dashboard_selectors = [
-                    self.selectors["new_lca_button"],
+            except Exception as e:
+                logger.warning(f"Error checking for email field: {str(e)}")
+
+            # If we're already logged in, we might be at the dashboard
+            if not email_field_visible:
+                # Check if we're already logged in
+                dashboard_indicators = [
                     "//a[contains(text(), 'Dashboard')]",
                     "//h1[contains(text(), 'Dashboard')]",
-                    "//div[contains(@class, 'dashboard')]"
+                    "//div[contains(@class, 'dashboard')]",
+                    self.selectors["new_lca_button"],
+                    "//a[contains(text(), 'New Application')]"
                 ]
 
-                for selector in dashboard_selectors:
-                    if await self.browser_manager.is_element_visible(self.page, selector, timeout=2000):
-                        logger.info("Already logged in and at dashboard")
-                        await self.screenshot_manager.take_screenshot(self.page, "already_logged_in")
-                        return True
+                for indicator in dashboard_indicators:
+                    try:
+                        if await self.browser_manager.is_element_visible(self.page, indicator, timeout=2000):
+                            logger.info("Already logged in and at dashboard")
+                            await self.screenshot_manager.take_screenshot(self.page, "already_logged_in")
+                            return True
+                    except Exception:
+                        continue
 
-                logger.error("Email field not found on Login.gov page and not at dashboard")
-                await self.screenshot_manager.take_screenshot(self.page, "login_gov_page_no_email_field")
+                # If we're not at the login page or dashboard, something's wrong
+                logger.error("Not at login page or dashboard")
+                await self.screenshot_manager.take_screenshot(self.page, "login_error_unknown_page")
                 return False
 
-            # Fill credentials
+            # We need to log in - extract credentials
             username = credentials.get("username", "")
             password = credentials.get("password", "")
 
@@ -179,35 +201,53 @@ class Navigation:
                 logger.error("Missing username or password")
                 return False
 
-            # Fill email and wait briefly for any animations
-            await self.browser_manager.fill_element(self.page, self.selectors["login_gov_email"], username)
-            await asyncio.sleep(0.5)
-
-            # Fill password
-            await self.browser_manager.fill_element(self.page, self.selectors["login_gov_password"], password)
-
-            # Handle CAPTCHA if present (uncommon on Login.gov but keeping as a precaution)
-            captcha_selector = "//img[contains(@alt, 'CAPTCHA')]"
-            if await self.browser_manager.is_element_visible(self.page, captcha_selector):
-                if not await self._handle_captcha():
-                    logger.error("Failed to solve CAPTCHA")
-                    return False
+            # Fill email and password
+            logger.info(f"Filling login credentials for {username}")
+            try:
+                await self.browser_manager.fill_element(self.page, self.selectors["login_gov_email"], username)
+                await asyncio.sleep(0.5)  # Wait briefly for animations
+                await self.browser_manager.fill_element(self.page, self.selectors["login_gov_password"], password)
+            except Exception as e:
+                logger.error(f"Error filling credentials: {str(e)}")
+                await self.screenshot_manager.take_screenshot(self.page, "credential_fill_error")
+                return False
 
             # Take screenshot before clicking login
-            await self.screenshot_manager.take_screenshot(self.page, "before_login_gov_submit")
+            await self.screenshot_manager.take_screenshot(self.page, "before_login_submit")
 
             # Click login button
-            await self.browser_manager.click_element(self.page, self.selectors["login_gov_submit"])
-            logger.info("Clicked Login.gov submit button")
+            login_button_clicked = False
+            try:
+                await self.browser_manager.click_element(self.page, self.selectors["login_gov_submit"])
+                login_button_clicked = True
+            except Exception as e:
+                logger.warning(f"Error clicking login button: {str(e)}")
+                # Try pressing Enter as fallback
+                try:
+                    await self.page.keyboard.press("Enter")
+                    login_button_clicked = True
+                    logger.info("Used Enter key to submit login")
+                except Exception as enter_e:
+                    logger.error(f"Error pressing Enter key: {str(enter_e)}")
+
+            if not login_button_clicked:
+                logger.error("Failed to submit login form")
+                await self.screenshot_manager.take_screenshot(self.page, "login_submit_error")
+                return False
+
+            logger.info("Submitted login credentials")
 
             # Wait for login to process
-            await self.page.wait_for_load_state("networkidle")
-            await asyncio.sleep(2)  # Add a short delay to ensure page is fully loaded
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=10000)
+                await asyncio.sleep(2)  # Additional wait for stability
+            except Exception as e:
+                logger.warning(f"Wait timeout after login (may be normal): {str(e)}")
 
-            # Take a screenshot after initial login
-            await self.screenshot_manager.take_screenshot(self.page, "after_login_gov_submit")
+            # Take a screenshot after login submission
+            await self.screenshot_manager.take_screenshot(self.page, "after_login_submit")
 
-            # Check for two-factor authentication page
+            # Check for two-factor authentication
             logger.info("Checking for TOTP authentication")
             totp_detected = await self._detect_and_handle_totp(username)
 
@@ -216,54 +256,39 @@ class Navigation:
             else:
                 logger.info("No TOTP required or TOTP handling failed")
 
-            # # Check for error message
-            # if await self.browser_manager.is_element_visible(self.page, self.selectors["error_message"], timeout=6000):
-            #     error_element = await self.browser_manager.find_element(self.page, self.selectors["error_message"])
-            #     error_text = await error_element.text_content()
-            #     logger.error(f"Login failed: {error_text}")
-            #     await self.screenshot_manager.take_screenshot(self.page, "login_error")
-            #     return False
-
-            # Take screenshot after login process
+            # Take screenshot after complete login process
             await self.screenshot_manager.take_screenshot(self.page, "after_complete_login")
 
-            # Multiple ways to verify successful login
-            login_success = False
+            # Check for successful login
+            logger.info("Verifying successful login")
 
-            # Check 1: URL indicates FLAG portal
+            # Check URL first
             if "flag.dol.gov" in self.page.url:
                 logger.info(f"URL indicates successful login: {self.page.url}")
-                login_success = True
+                return True
 
-            print("Login successful...................................................................................")
-            # Check 2: Look for dashboard elements using multiple selectors
-            dashboard_selectors = [
-                self.selectors["new_application_button"]
+            # Look for dashboard elements as backup
+            dashboard_indicators = [
+                "//a[contains(text(), 'Dashboard')]",
+                "//h1[contains(text(), 'Dashboard')]",
+                "//div[contains(@class, 'dashboard')]",
+                self.selectors["new_lca_button"],
+                "//a[contains(text(), 'New Application')]",
+                "//button[contains(text(), 'Log Out')]"
             ]
 
-            return True
+            for indicator in dashboard_indicators:
+                try:
+                    if await self.browser_manager.is_element_visible(self.page, indicator, timeout=2000):
+                        logger.info(f"Found dashboard element: {indicator}")
+                        return True
+                except Exception:
+                    continue
 
-            # Check 3: Look for user profile elements that indicate logged-in state
-            # profile_selectors = [
-            #     "//button[contains(text(), 'Log Out') or contains(text(), 'Sign Out')]",
-            #     "//span[contains(@class, 'user-name') or contains(@class, 'userName')]",
-            #     "//div[contains(@class, 'user-profile') or contains(@class, 'userProfile')]"
-            # ]
-            #
-            # for selector in profile_selectors:
-            #     if await self.browser_manager.is_element_visible(self.page, selector, timeout=2000):
-            #         logger.info(f"Found user profile element using selector: {selector}")
-            #         login_success = True
-            #         break
-            #
-            # if login_success:
-            #     logger.info("Login successful")
-            #     await self.screenshot_manager.take_screenshot(self.page, "login_success_dashboard")
-            #     return True
-            # else:
-            #     logger.error("Login failed: No dashboard or user profile elements found")
-            #     await self.screenshot_manager.take_screenshot(self.page, "login_failure_no_dashboard")
-            #     return False
+            # If we get here, login probably failed
+            logger.error("Login verification failed - could not find dashboard elements")
+            await self.screenshot_manager.take_screenshot(self.page, "login_verification_failed")
+            return False
 
         except Exception as e:
             logger.error(f"Login error: {str(e)}")
@@ -280,40 +305,68 @@ class Navigation:
         Returns:
             True if successfully handled, False otherwise
         """
-        # Wait for potential TOTP input field
-        totp_input_visible = await self.browser_manager.is_element_visible(
-            self.page,
+        logger.info("Checking for TOTP authentication screen")
+
+        # Take screenshot to help with debugging
+        await self.screenshot_manager.take_screenshot(self.page, "before_totp_detection")
+
+        # Wait for potential TOTP input field with a longer timeout (10 seconds)
+        totp_input_visible = False
+        totp_selectors = [
             self.selectors["login_gov_totp_code"],
-            timeout=5000
-        )
+            "//input[@id='code' or contains(@id, 'totp') or contains(@name, 'code')]",
+            "//input[contains(@placeholder, 'code') or contains(@aria-label, 'code')]",
+            "//input[contains(@class, 'mfa') or contains(@class, 'totp')]"
+        ]
+
+        # Try multiple possible selectors for TOTP input
+        for selector in totp_selectors:
+            try:
+                totp_input_visible = await self.browser_manager.is_element_visible(
+                    self.page, selector, timeout=2000
+                )
+                if totp_input_visible:
+                    totp_input = await self.browser_manager.find_element(self.page, selector)
+                    logger.info(f"Found TOTP input field with selector: {selector}")
+                    break
+            except Exception as e:
+                logger.debug(f"Error checking selector {selector}: {str(e)}")
+                continue
 
         if not totp_input_visible:
             # Check for text indicators of 2FA
             page_content = await self.page.content()
-            totp_indicators = ["two-factor", "2fa", "verification code", "authentication code", "security code"]
-            has_totp_indicator = any(indicator in page_content.lower() for indicator in totp_indicators)
+            page_text = await self.page.evaluate("() => document.body.textContent")
 
-            if not has_totp_indicator:
-                # No TOTP detected
+            # Log what we're seeing on the page for debugging
+            logger.info(f"Current page URL: {self.page.url}")
+            await self.screenshot_manager.take_screenshot(self.page, "possible_totp_page")
+
+            totp_indicators = [
+                "two-factor", "2fa", "verification code", "authentication code",
+                "security code", "one-time code", "one time password", "authenticator",
+                "enter the code", "6-digit code", "6 digit code", "enter code"
+            ]
+
+            has_totp_indicator = any(indicator.lower() in page_text.lower() for indicator in totp_indicators)
+
+            if has_totp_indicator:
+                logger.info("Found TOTP indicators in page text")
+                # Try to find any input field if TOTP indicators are present
+                try:
+                    totp_input = await self.browser_manager.find_element(
+                        self.page,
+                        "//input[@type='text' or @type='number' or @type='tel' or not(@type)]"
+                    )
+                    totp_input_visible = True
+                    logger.info("Found potential TOTP input field based on page content")
+                except Exception as e:
+                    logger.warning(f"TOTP indicators found but no input field detected: {str(e)}")
+                    await self.screenshot_manager.take_screenshot(self.page, "totp_indicators_no_field")
+                    return False
+            else:
                 logger.info("No TOTP authentication detected")
                 return False
-
-            # Try to find any input field if TOTP indicators are present
-            try:
-                totp_input = await self.browser_manager.find_element(
-                    self.page,
-                    "//input[@type='text' or @type='number' or not(@type)]"
-                )
-            except ElementNotFoundError:
-                logger.warning("TOTP indicators found but no input field detected")
-                await self.screenshot_manager.take_screenshot(self.page, "totp_indicators_no_field")
-                return False
-        else:
-            # TOTP input field found directly
-            totp_input = await self.browser_manager.find_element(
-                self.page,
-                self.selectors["login_gov_totp_code"]
-            )
 
         # Generate TOTP code
         if not self.two_factor_auth:
@@ -323,50 +376,96 @@ class Navigation:
 
         totp_code = self.two_factor_auth.generate_totp_code(username)
         if not totp_code:
-            logger.error("Failed to generate TOTP code")
+            logger.error(f"Failed to generate TOTP code for username: {username}")
             await self.screenshot_manager.take_screenshot(self.page, "totp_generation_failed")
             return False
 
         logger.info(f"Generated TOTP code: {totp_code}")
 
         # Fill TOTP code
-        await totp_input.fill(totp_code)
-        await self.screenshot_manager.take_screenshot(self.page, "totp_code_entered")
+        try:
+            await totp_input.fill(totp_code)
+            logger.info("Filled in TOTP code")
+            await self.screenshot_manager.take_screenshot(self.page, "totp_code_entered")
+        except Exception as e:
+            logger.error(f"Error filling TOTP input: {str(e)}")
+            await self.screenshot_manager.take_screenshot(self.page, "totp_fill_error")
+            return False
 
-        # Look for submit button
-        submit_visible = await self.browser_manager.is_element_visible(
-            self.page,
+        # Look for submit button with multiple possible selectors
+        submit_selectors = [
             self.selectors["login_gov_totp_submit"],
-            timeout=3000
-        )
+            "//button[@type='submit']",
+            "//button[contains(text(), 'Submit') or contains(text(), 'Verify') or contains(text(), 'Continue')]",
+            "//input[@type='submit']"
+        ]
 
-        if submit_visible:
+        submit_button = None
+        for selector in submit_selectors:
+            try:
+                if await self.browser_manager.is_element_visible(self.page, selector, timeout=1000):
+                    submit_button = await self.browser_manager.find_element(self.page, selector)
+                    logger.info(f"Found submit button with selector: {selector}")
+                    break
+            except Exception as e:
+                logger.debug(f"Error checking submit button selector {selector}: {str(e)}")
+                continue
+
+        if submit_button:
             # Click submit button
-            await self.browser_manager.click_element(self.page, self.selectors["login_gov_totp_submit"])
-            logger.info("Clicked TOTP submit button")
+            try:
+                await submit_button.click()
+                logger.info("Clicked TOTP submit button")
+            except Exception as e:
+                logger.error(f"Error clicking submit button: {str(e)}")
+                await self.screenshot_manager.take_screenshot(self.page, "totp_submit_click_error")
+                # Try pressing Enter key as fallback
+                try:
+                    await self.page.keyboard.press("Enter")
+                    logger.info("Pressed Enter key to submit TOTP")
+                except Exception as enter_e:
+                    logger.error(f"Error pressing Enter key: {str(enter_e)}")
+                    return False
         else:
             # Some Login.gov flows might auto-submit on input
-            logger.info("No explicit TOTP submit button found, may auto-submit")
+            logger.info("No explicit TOTP submit button found, trying Enter key")
+            try:
+                await self.page.keyboard.press("Enter")
+                logger.info("Pressed Enter key to submit TOTP")
+            except Exception as e:
+                logger.error(f"Error pressing Enter key: {str(e)}")
+                # Still continue as some forms auto-submit
 
-        # Wait for processing
-        await self.page.wait_for_load_state("networkidle")
-        await asyncio.sleep(2)
+        # Wait for processing with longer timeout (15 seconds)
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception as e:
+            logger.warning(f"Wait for load state timeout (may be normal): {str(e)}")
+
+        # Add an additional wait to ensure the page has time to process
+        await asyncio.sleep(5)
 
         # Take screenshot
         await self.screenshot_manager.take_screenshot(self.page, "after_totp_submission")
 
         # Check if we're still on the TOTP page
-        still_on_totp = await self.browser_manager.is_element_visible(
-            self.page,
-            self.selectors["login_gov_totp_code"],
-            timeout=3000
-        )
+        still_on_totp = False
+        for selector in totp_selectors:
+            try:
+                still_on_totp = await self.browser_manager.is_element_visible(
+                    self.page, selector, timeout=2000
+                )
+                if still_on_totp:
+                    break
+            except Exception:
+                continue
 
         if still_on_totp:
             logger.error("Still on TOTP page after submission, may have failed")
             await self.screenshot_manager.take_screenshot(self.page, "totp_submission_failed")
             return False
 
+        logger.info("TOTP authentication successfully completed")
         return True
 
     async def navigate_to_new_lca(self) -> bool:

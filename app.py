@@ -247,12 +247,23 @@ async def async_initialize_lca_filer():
 # Shutdown handler
 @app.teardown_appcontext
 def shutdown_lca_filer(exception=None):
-    global lca_filer
-    if lca_filer:
-        # Clean up in the async event loop
-        future = asyncio.run_coroutine_threadsafe(lca_filer.shutdown(), loop)
-        future.result()
-        logger.info("LCA filer shut down")
+    global lca_filer, interactive_filer
+    try:
+        # Check if interactive filer has active filings
+        if interactive_filer and interactive_filer.has_active_filings():
+            logger.info("Not shutting down LCA filer - active filings in progress")
+            return
+
+        # Only shut down if no filings are active
+        active_filings_exist = any(filing.get("active", False) for filing in active_filings.values())
+
+        if not active_filings_exist and lca_filer:
+            # Clean up in the async event loop
+            future = asyncio.run_coroutine_threadsafe(lca_filer.shutdown(), loop)
+            future.result()
+            logger.info("LCA filer shut down")
+    except Exception as e:
+        logger.error(f"Error in shutdown handler: {str(e)}")
 
 
 # Routes
@@ -461,8 +472,12 @@ def review_filing(filing_id):
             # Start the filing process in a separate thread
             from threading import Thread
 
+            # Update the _process_with_semaphore function in app.py
             def process_filing(filer, filing_data):
                 try:
+                    # Set a flag to indicate this filing is active
+                    filing_data["active"] = True
+
                     # Run the async filing in the event loop
                     filing_result = asyncio.run_coroutine_threadsafe(
                         filer.start_interactive_filing(filing_data["data"]), loop).result()
@@ -471,6 +486,9 @@ def review_filing(filing_id):
                     filing_data["status"] = filing_result.get("status", "error")
                     filing_data["result"] = filing_result
                     filing_data["completed_at"] = datetime.now().isoformat()
+
+                    # Mark as no longer active
+                    filing_data["active"] = False
 
                     # Add final status update
                     status_update_manager.update_status(filing_id, {
@@ -486,6 +504,7 @@ def review_filing(filing_id):
                     filing_data["status"] = "error"
                     filing_data["error"] = str(e)
                     filing_data["completed_at"] = datetime.now().isoformat()
+                    filing_data["active"] = False  # Mark as no longer active
 
                     # Add error status update
                     status_update_manager.update_status(filing_id, {

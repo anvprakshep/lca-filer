@@ -353,3 +353,27 @@ class ScreenshotManager:
         except Exception as e:
             logger.error(f"Error archiving screenshots: {str(e)}")
             return False
+
+    async def take_screenshot_safely(self, page, name, **kwargs):
+        """
+        Safely take a screenshot, handling errors gracefully.
+
+        Args:
+            page: Playwright page
+            name: Screenshot name
+            **kwargs: Additional arguments for take_screenshot
+
+        Returns:
+            Path to screenshot or empty string if failed
+        """
+        try:
+            # Check if page is still open
+            if page.is_closed():
+                logger.warning(f"Cannot take screenshot '{name}': Page is closed")
+                return ""
+
+            # Try to take screenshot
+            return await self.take_screenshot(page, name, **kwargs)
+        except Exception as e:
+            logger.warning(f"Error taking screenshot '{name}': {str(e)}")
+            return ""

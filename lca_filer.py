@@ -23,6 +23,22 @@ from config.form_structure import FormStructure
 logger = get_logger(__name__)
 
 
+async def check_browser_dependencies() -> bool:
+    try:
+        # Run a simple command to check if browser binaries are installed
+        import subprocess
+        result = subprocess.run(["playwright", "browser-info"],
+                                capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            logger.error(f"Playwright browser dependencies missing: {result.stderr}")
+            logger.info("Try running: playwright install chromium")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking browser dependencies: {str(e)}")
+        return False
+
+
 class LCAFiler:
     """Main class for LCA filing automation."""
 
@@ -62,26 +78,26 @@ class LCAFiler:
 
         logger.info(f"LCAFiler initialized with generation ID: {self.generation_id}")
 
-    async def initialize(self) -> bool:
-        """
-        Initialize components.
+    async def initialize(self, max_retries=3) -> bool:
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Initializing browser manager (attempt {attempt + 1}/{max_retries})")
+                await self.browser_manager.initialize()
 
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Initialize browser
-            logger.info("Initializing browser manager")
-            if not await self.browser_manager.initialize():
-                logger.error("Failed to initialize browser manager")
-                return False
+                if self.browser_manager.browser and self.browser_manager.context:
+                    logger.info("LCAFiler initialized successfully")
+                    return True
 
-            logger.info("LCAFiler initialized successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error initializing LCAFiler: {str(e)}")
-            return False
+                logger.warning(f"Browser or context not properly initialized on attempt {attempt + 1}")
+            except Exception as e:
+                logger.error(f"Error initializing LCAFiler (attempt {attempt + 1}): {str(e)}")
 
+            # Wait before retry
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)  # 2-second delay between retries
+
+        logger.error(f"Failed to initialize LCAFiler after {max_retries} attempts")
+        return False
 
     async def shutdown(self) -> None:
         """Clean up resources."""
@@ -247,16 +263,27 @@ class LCAFiler:
 
             # Check if the username has a TOTP secret configured
             username = credentials.get("username", "")
-            if username and self.two_factor_auth and not self.config.has_totp_secret(username):
-                app_logger.warning(f"No TOTP secret found for username: {username}")
+            # Add this code at the beginning of the file_lca method after configuring TOTP
+            if username and self.two_factor_auth and self.config.has_totp_secret(username):
+                # Test TOTP before proceeding
+                logger.info(f"Testing TOTP code generation for {username}")
+                totp_test = self.two_factor_auth.test_totp_for_user(username)
 
-                # Check if TOTP secret is provided in application data
-                if "totp_secret" in application_data:
-                    # Add the secret to the configuration
-                    self.config.set_totp_secret(username, application_data["totp_secret"])
-                    app_logger.info(f"Added TOTP secret for {username} from application data")
+                if totp_test["status"] == "success":
+                    logger.info(f"TOTP test successful. Current code: {totp_test['current_code']}")
+                elif totp_test["status"] == "partial_success":
+                    # Update configuration with working parameters
+                    logger.info(f"TOTP default config failed but found working alternative")
+                    rec_config = totp_test["recommended_config"]
+                    self.two_factor_auth.algorithm = rec_config["algorithm"]
+                    self.two_factor_auth.digits = rec_config["digits"]
+                    self.two_factor_auth.interval = rec_config["interval"]
+                    logger.info(
+                        f"Updated TOTP config: alg={rec_config['algorithm']}, digits={rec_config['digits']}, interval={rec_config['interval']}")
+                    logger.info(f"Current code with new config: {totp_test['current_code']}")
                 else:
-                    app_logger.warning(f"2FA is enabled but no TOTP secret provided for {username}")
+                    logger.error(f"TOTP test failed: {totp_test['error']}")
+                    app_logger.warning(f"TOTP configuration test failed. Authentication may fail.")
 
             if not await navigation.login(credentials):
                 result["status"] = "login_failed"
@@ -400,9 +427,14 @@ class LCAFiler:
         totp_secret = credentials.get("totp_secret")
 
         if username and totp_secret:
+            # Enable TOTP if it wasn't already
+            if not self.config.get("totp", "enabled", default=False):
+                self.config.set(True, "totp", "enabled")
+                logger.info("Enabled TOTP authentication")
+
             # Initialize TOTP handler if not already
             if not self.two_factor_auth:
-                totp_config = self.config.get("totp")
+                totp_config = self.config.get("totp", {})
                 # Make sure we have a 'secrets' dictionary even if it's empty
                 if "secrets" not in totp_config:
                     totp_config["secrets"] = {}
@@ -516,7 +548,7 @@ class LCAFiler:
             totp_secret = self.config.get_totp_secret(username)
             if totp_secret:
                 # Initialize TOTP handler on demand
-                totp_config = self.config.get("totp", {})
+                totp_config = self.config.get("totp")
                 if "secrets" not in totp_config:
                     totp_config["secrets"] = {}
                 totp_config["secrets"][username] = totp_secret

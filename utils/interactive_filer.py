@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
@@ -36,6 +37,10 @@ class InteractiveFiler:
         self.interaction_completed = asyncio.Event()
         self.filing_paused = False
         self.status_update_callback = None  # Will be set externally if needed
+
+        # Active filings tracking
+        self.active_filings = set()
+        self._lock = threading.Lock()
 
     def set_status_update_callback(self, callback: Callable):
         """
@@ -90,6 +95,9 @@ class InteractiveFiler:
 
         # Initialize result
         filing_id = application_data.get('id', f"app_{int(time.time())}")
+        with self._lock:
+            self.active_filings.add(filing_id)
+
         result = {
             "application_id": filing_id,
             "generation_id": self.lca_filer.generation_id,
@@ -99,14 +107,15 @@ class InteractiveFiler:
             "interactions": []
         }
 
-        # Send initial status update
-        self.update_filing_status(filing_id, {
-            "status": "started",
-            "message": "Initializing filing process",
-            "timestamp": datetime.now().isoformat()
-        })
+        print("application data", application_data)
 
         try:
+            # Send initial status update
+            self.update_filing_status(filing_id, {
+                "status": "started",
+                "message": "Initializing filing process",
+                "timestamp": datetime.now().isoformat()
+            })
             # Check if browser manager is initialized
             if not self.lca_filer.browser_manager.browser or not self.lca_filer.browser_manager.context:
                 logger.error("Browser manager not initialized, attempting to initialize")
@@ -116,6 +125,21 @@ class InteractiveFiler:
                     result["status"] = "error"
                     result["error"] = error_msg
                     return result
+
+            # Add the TOTP secret to the configuration if provided in application data
+            if "totp_secret" in application_data["credentials"]:
+                # Get username and TOTP secret
+                app_username = application_data["credentials"]["username"]
+                app_totp_secret = application_data["credentials"]["totp_secret"]
+
+                # Add to configuration
+                self.lca_filer.config.set_totp_secret(app_username, app_totp_secret)
+                logger.info(f"Added DOL TOTP secret for {app_username} from application data")
+
+                # Test the TOTP secret to make sure it generates codes
+                if self.lca_filer.two_factor_auth:
+                    test_code = self.lca_filer.two_factor_auth.generate_totp_code(app_username)
+                    logger.info(f"Current TOTP code for testing: {test_code}")
 
             # Create a new page
             self.update_filing_status(filing_id, {
@@ -653,6 +677,12 @@ class InteractiveFiler:
             result["status"] = "error"
             result["error"] = str(e)
             return result
+
+        finally:
+            # Remove filing_id from active filings when done
+            with self._lock:
+                if filing_id in self.active_filings:
+                    self.active_filings.remove(filing_id)
 
     async def _apply_interaction_results(self, page, form_filler, interaction_result: Dict[str, Any]) -> None:
         """

@@ -210,3 +210,128 @@ class TwoFactorAuth:
         else:
             logger.warning(f"Unsupported algorithm: {algorithm}, using SHA1")
             return "sha1"
+
+    def test_totp_for_user(self, username: str) -> Dict[str, Any]:
+        """
+        Test TOTP generation for a specific user and provide detailed diagnostic info.
+
+        Args:
+            username: Username to test TOTP for
+
+        Returns:
+            Dictionary with test results and diagnostics
+        """
+        results = {
+            "username": username,
+            "status": "failed",
+            "error": "",
+            "diagnostics": {}
+        }
+
+        try:
+            # Check if we have a secret for this user
+            secret = self.totp_secrets.get(username)
+            if not secret:
+                results["error"] = f"No TOTP secret found for username: {username}"
+                return results
+
+            # Try to clean the secret
+            cleaned_secret = self._clean_secret(secret)
+            results["diagnostics"]["original_secret"] = secret
+            results["diagnostics"]["cleaned_secret"] = cleaned_secret
+            results["diagnostics"]["secret_length"] = len(cleaned_secret)
+
+            # Try with multiple algorithm combinations to diagnose issues
+            algorithms = ["sha1", "sha256", "sha512"]
+            digit_options = [6, 8]
+            interval_options = [30, 60]
+
+            all_test_results = {}
+
+            # Try with default settings first
+            try:
+                totp = pyotp.TOTP(
+                    cleaned_secret,
+                    digits=self.digits,
+                    interval=self.interval,
+                    digest=self._get_digest_algorithm()
+                )
+                code = totp.now()
+                remaining = self.interval - (int(time.time()) % self.interval)
+
+                all_test_results["default"] = {
+                    "algorithm": self.algorithm,
+                    "digits": self.digits,
+                    "interval": self.interval,
+                    "code": code,
+                    "remaining": remaining,
+                    "success": True
+                }
+            except Exception as e:
+                all_test_results["default"] = {
+                    "algorithm": self.algorithm,
+                    "digits": self.digits,
+                    "interval": self.interval,
+                    "error": str(e),
+                    "success": False
+                }
+
+            # Try all combinations
+            for alg in algorithms:
+                for digits in digit_options:
+                    for interval in interval_options:
+                        key = f"{alg}_{digits}_{interval}"
+                        try:
+                            totp = pyotp.TOTP(
+                                cleaned_secret,
+                                digits=digits,
+                                interval=interval,
+                                digest=alg
+                            )
+                            code = totp.now()
+                            remaining = interval - (int(time.time()) % interval)
+
+                            all_test_results[key] = {
+                                "algorithm": alg,
+                                "digits": digits,
+                                "interval": interval,
+                                "code": code,
+                                "remaining": remaining,
+                                "success": True
+                            }
+                        except Exception as e:
+                            all_test_results[key] = {
+                                "algorithm": alg,
+                                "digits": digits,
+                                "interval": interval,
+                                "error": str(e),
+                                "success": False
+                            }
+
+            results["diagnostics"]["test_variations"] = all_test_results
+
+            # If the default works, report success
+            if all_test_results["default"]["success"]:
+                results["status"] = "success"
+                results["current_code"] = all_test_results["default"]["code"]
+                results["remaining_seconds"] = all_test_results["default"]["remaining"]
+            else:
+                # Check if any configuration works
+                working_configs = [k for k, v in all_test_results.items() if v["success"]]
+                if working_configs:
+                    best_config = working_configs[0]
+                    results["status"] = "partial_success"
+                    results["recommended_config"] = {
+                        "algorithm": all_test_results[best_config]["algorithm"],
+                        "digits": all_test_results[best_config]["digits"],
+                        "interval": all_test_results[best_config]["interval"]
+                    }
+                    results["current_code"] = all_test_results[best_config]["code"]
+                    results["error"] = f"Default configuration failed, but {best_config} works"
+                else:
+                    results["error"] = "Could not generate valid TOTP with any configuration"
+
+        except Exception as e:
+            results["error"] = f"Error testing TOTP: {str(e)}"
+
+        return results
