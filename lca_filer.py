@@ -71,12 +71,17 @@ class LCAFiler:
         """
         try:
             # Initialize browser
-            await self.browser_manager.initialize()
-            logger.info("LCAFiler initialized")
+            logger.info("Initializing browser manager")
+            if not await self.browser_manager.initialize():
+                logger.error("Failed to initialize browser manager")
+                return False
+
+            logger.info("LCAFiler initialized successfully")
             return True
         except Exception as e:
             logger.error(f"Error initializing LCAFiler: {str(e)}")
             return False
+
 
     async def shutdown(self) -> None:
         """Clean up resources."""

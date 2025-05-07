@@ -1,6 +1,8 @@
 import os
 import json
 import asyncio
+from typing import Dict, Any, Optional, List
+
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -13,7 +15,7 @@ import threading
 from lca_filer import LCAFiler
 from config.config import Config
 from utils.file_utils import FileUtils
-from utils.logger import get_logger
+from utils.logger import get_logger, log_exception
 from utils.interactive_filer import InteractiveFiler
 
 # Set up logging
@@ -43,6 +45,75 @@ config_path = os.environ.get('CONFIG_PATH', 'config.json')
 config = Config(config_path)
 
 
+# Status update manager for real-time updates
+class StatusUpdateManager:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status_updates = {}
+
+    def update_status(self, filing_id: str, status_update: Dict[str, Any]) -> None:
+        """
+        Update the status of a filing.
+
+        Args:
+            filing_id: Filing ID
+            status_update: Status update dictionary
+        """
+        with self.lock:
+            # Create entry if it doesn't exist
+            if filing_id not in self.status_updates:
+                self.status_updates[filing_id] = []
+
+            # Add timestamp if not present
+            if "timestamp" not in status_update:
+                status_update["timestamp"] = datetime.now().isoformat()
+
+            # Add the update to the list
+            self.status_updates[filing_id].append(status_update)
+
+            # Update active filing status if it exists
+            if filing_id in active_filings:
+                active_filings[filing_id]["status"] = status_update.get("status", active_filings[filing_id]["status"])
+
+                # Create status history if needed
+                if "status_history" not in active_filings[filing_id]:
+                    active_filings[filing_id]["status_history"] = []
+
+                # Add update to status history
+                active_filings[filing_id]["status_history"].append(status_update)
+
+                # Update current section if present
+                if "current_section" in status_update:
+                    active_filings[filing_id]["current_section"] = status_update["current_section"]
+
+    def get_updates(self, filing_id: str, since: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get status updates for a filing.
+
+        Args:
+            filing_id: Filing ID
+            since: Optional timestamp to filter updates
+
+        Returns:
+            List of status updates
+        """
+        with self.lock:
+            if filing_id not in self.status_updates:
+                return []
+
+            if since:
+                # Return only updates since the given timestamp
+                return [update for update in self.status_updates[filing_id]
+                        if update.get("timestamp", "") > since]
+            else:
+                # Return all updates
+                return self.status_updates[filing_id]
+
+
+# Create status update manager
+status_update_manager = StatusUpdateManager()
+
+
 # Interaction manager
 class InteractionManager:
     def __init__(self):
@@ -56,6 +127,18 @@ class InteractionManager:
             if filing_id in active_filings:
                 active_filings[filing_id]["interaction_needed"] = interaction_data
                 active_filings[filing_id]["status"] = "interaction_needed"
+
+                # Add status update for interaction needed
+                status_update_manager.update_status(filing_id, {
+                    "status": "interaction_needed",
+                    "step": "interaction_required",
+                    "message": f"Human interaction required for section: {interaction_data.get('section_name', 'current section')}",
+                    "interaction_data": {
+                        "section": interaction_data.get('section_name', ''),
+                        "fields": [field.get("id") for field in interaction_data.get("fields", [])],
+                        "has_errors": interaction_data.get("has_errors", False)
+                    }
+                })
 
     def get_interaction(self, filing_id):
         with self.lock:
@@ -79,6 +162,13 @@ class InteractionManager:
                     active_filings[filing_id]["interaction_needed"] = None
                     active_filings[filing_id]["status"] = "processing"
 
+                    # Add status update for resuming after interaction
+                    status_update_manager.update_status(filing_id, {
+                        "status": "processing",
+                        "step": "continuing_after_interaction",
+                        "message": "Continuing process after human interaction"
+                    })
+
                 # Remove from queue
                 del self.interaction_queue[filing_id]
                 return True
@@ -93,6 +183,14 @@ interaction_manager = InteractionManager()
 def handle_interaction(filing_id, interaction_data):
     """Handle required interaction from the filing process"""
     interaction_manager.register_interaction(filing_id, interaction_data)
+
+
+# Callback to handle status updates from the interactive filer
+def handle_status_update(filing_id, status_update):
+    """Handle status update from the filing process"""
+    status_update_manager.update_status(filing_id, status_update)
+    logger.info(
+        f"Status update for filing {filing_id}: {status_update.get('status')} - {status_update.get('message', '')}")
 
 
 # User login status check
@@ -123,12 +221,22 @@ def initialize_lca_filer():
 
 async def async_initialize_lca_filer():
     try:
+        # Create a new LCA filer
         filer = LCAFiler()
-        print("Initializing LCA filer", lca_filer)
-        await filer.initialize()
 
-        # Create interactive filer
+        # Explicitly initialize browser and other components
+        logger.info("Initializing LCA filer components")
+        if not await filer.initialize():
+            logger.error("Failed to initialize LCA filer components")
+            return None, None
+
+        logger.info("LCA filer initialization successful")
+
+        # Create interactive filer with proper callback
         interactive = InteractiveFiler(filer, handle_interaction)
+
+        # Set status update callback
+        interactive.set_status_update_callback(handle_status_update)
 
         return filer, interactive
     except Exception as e:
@@ -337,8 +445,18 @@ def review_filing(filing_id):
                 if not lca_filer or not interactive_filer:
                     raise Exception("Failed to initialize LCA filer")
 
+            # Configure status update callback
+            interactive_filer.set_status_update_callback(handle_status_update)
+
             # Mark as processing
             filing["status"] = "processing"
+
+            # Add initial status update
+            status_update_manager.update_status(filing_id, {
+                "status": "processing",
+                "step": "starting",
+                "message": "Starting filing process"
+            })
 
             # Start the filing process in a separate thread
             from threading import Thread
@@ -354,12 +472,28 @@ def review_filing(filing_id):
                     filing_data["result"] = filing_result
                     filing_data["completed_at"] = datetime.now().isoformat()
 
+                    # Add final status update
+                    status_update_manager.update_status(filing_id, {
+                        "status": filing_result.get("status", "error"),
+                        "step": "complete",
+                        "message": f"Filing completed with status: {filing_result.get('status', 'error')}",
+                        "confirmation_number": filing_result.get("confirmation_number", "")
+                    })
+
                     logger.info(f"Filing {filing_data['id']} completed with status: {filing_data['status']}")
                 except Exception as e:
                     logger.error(f"Error processing filing {filing_data['id']}: {str(e)}")
                     filing_data["status"] = "error"
                     filing_data["error"] = str(e)
                     filing_data["completed_at"] = datetime.now().isoformat()
+
+                    # Add error status update
+                    status_update_manager.update_status(filing_id, {
+                        "status": "error",
+                        "step": "error",
+                        "message": f"Error during filing: {str(e)}",
+                        "error": str(e)
+                    })
 
             # Start background thread with interactive filer
             thread = Thread(target=process_filing, args=(interactive_filer, filing))
@@ -413,7 +547,40 @@ def filing_status(filing_id):
 
     filing["screenshots"] = screenshots
 
-    return render_template('filing_status.html', filing=filing, needs_interaction=needs_interaction)
+    # Get status updates
+    updates = status_update_manager.get_updates(filing_id)
+
+    # Include updates in the template context
+    return render_template('filing_status.html',
+                           filing=filing,
+                           needs_interaction=needs_interaction,
+                           status_updates=updates)
+
+
+@app.route('/api/filing-status/<filing_id>', methods=['GET'])
+@login_required
+def api_filing_status(filing_id):
+    if filing_id not in active_filings:
+        return jsonify({"error": "Filing not found"}), 404
+
+    # Get since parameter
+    since = request.args.get('since')
+
+    # Get updates
+    updates = status_update_manager.get_updates(filing_id, since)
+
+    # Basic filing info
+    filing = active_filings[filing_id]
+
+    # Return status
+    return jsonify({
+        "filing_id": filing_id,
+        "status": filing.get("status", "unknown"),
+        "updates": updates,
+        "current_section": filing.get("current_section", ""),
+        "interaction_needed": filing.get("interaction_needed") is not None,
+        "last_update": updates[-1] if updates else None
+    })
 
 
 @app.route('/human-interaction/<filing_id>', methods=['GET', 'POST'])
@@ -441,10 +608,18 @@ def human_interaction(filing_id):
             for field in interaction_data["fields"]:
                 field_id = field.get("id")
                 if field_id in request.form:
-                    interaction_result[field_id] = request.form[field_id]
+                    # Process based on field type
+                    field_type = field.get("type")
+
+                    if field_type == "checkbox":
+                        # Checkboxes will only be in the form if checked
+                        interaction_result[field_id] = request.form[field_id] == "true"
+                    else:
+                        interaction_result[field_id] = request.form[field_id]
 
             # Pass the results back to the interactive filer
-            interactive_filer.set_interaction_result(filing_id, interaction_result)
+            if interactive_filer:
+                interactive_filer.set_interaction_result(filing_id, interaction_result)
 
             # Mark interaction as resolved
             interaction_manager.resolve_interaction(filing_id, interaction_result)
@@ -457,7 +632,53 @@ def human_interaction(filing_id):
             logger.error(f"Error processing human interaction: {str(e)}")
             flash(f"Error submitting input: {str(e)}", 'danger')
 
-    return render_template('human_interaction.html', filing=filing, interaction=interaction_data)
+    # Prepare data for template
+    template_data = {
+        'filing': filing,
+        'interaction': {
+            'section_name': interaction_data.get('section_name', 'Current Form Section'),
+            'guidance': interaction_data.get('guidance', 'Please complete the following fields'),
+            'screenshot_path': interaction_data.get('screenshot_path', ''),
+            'error_messages': interaction_data.get('error_messages', []),
+            'has_errors': interaction_data.get('has_errors', False),
+            'fields': []
+        }
+    }
+
+    # Process each field to enhance rendering in the template
+    for field in interaction_data.get('fields', []):
+        # Create a field object with all needed rendering information
+        field_obj = {
+            'id': field.get('id', ''),
+            'label': field.get('label', field.get('id', 'Field')),
+            'type': field.get('type', 'text'),
+            'default_value': field.get('default_value', ''),
+            'required': field.get('required', False),
+            'description': field.get('description', ''),
+            'field_errors': field.get('field_errors', []),
+            'validation_message': field.get('validation_message', ''),
+            'note': field.get('note', ''),
+            'placeholder': field.get('placeholder', ''),
+            'pattern': field.get('pattern', ''),
+            'min': field.get('min', ''),
+            'max': field.get('max', ''),
+            'step': field.get('step', ''),
+            'accept': field.get('accept', '')  # For file inputs
+        }
+
+        # Handle options for select, radio, etc.
+        if 'options' in field:
+            field_obj['options'] = []
+            for option in field['options']:
+                field_obj['options'].append({
+                    'value': option.get('value', ''),
+                    'label': option.get('label', option.get('value', '')),
+                    'selected': option.get('selected', False) or option.get('checked', False)
+                })
+
+        template_data['interaction']['fields'].append(field_obj)
+
+    return render_template('human_interaction.html', **template_data)
 
 
 @app.route('/upload-csv', methods=['GET', 'POST'])
@@ -526,6 +747,9 @@ def batch_processing():
                 if not lca_filer or not interactive_filer:
                     raise Exception("Failed to initialize LCA filer")
 
+            # Set status update callback
+            interactive_filer.set_status_update_callback(handle_status_update)
+
             # Configure batch processing options
             max_concurrent = int(request.form.get('max_concurrent', 5))
 
@@ -567,12 +791,26 @@ def batch_processing():
                         active_filings[filing_id] = filing
                         batch_filings.append(filing)
 
+                        # Add initial status update
+                        status_update_manager.update_status(filing_id, {
+                            "status": "pending",
+                            "step": "batch_queued",
+                            "message": "Queued for batch processing"
+                        })
+
                     # Process filings with concurrent limit
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
                         futures = []
 
                         for filing in batch_filings:
+                            # Update status to queued
+                            status_update_manager.update_status(filing["id"], {
+                                "status": "queued",
+                                "step": "batch_processing",
+                                "message": f"Queued for processing in batch"
+                            })
+
                             future = executor.submit(
                                 asyncio.run_coroutine_threadsafe,
                                 interactive_filer.start_interactive_filing(filing["data"]),
@@ -590,12 +828,28 @@ def batch_processing():
                                 filing["result"] = filing_result
                                 filing["completed_at"] = datetime.now().isoformat()
 
+                                # Add final status update
+                                status_update_manager.update_status(filing["id"], {
+                                    "status": filing_result.get("status", "error"),
+                                    "step": "batch_complete",
+                                    "message": f"Batch processing completed with status: {filing_result.get('status', 'error')}",
+                                    "confirmation_number": filing_result.get("confirmation_number", "")
+                                })
+
                                 logger.info(f"Batch filing {filing['id']} completed with status: {filing['status']}")
                             except Exception as e:
                                 logger.error(f"Error in batch filing {filing['id']}: {str(e)}")
                                 filing["status"] = "error"
                                 filing["error"] = str(e)
                                 filing["completed_at"] = datetime.now().isoformat()
+
+                                # Add error status update
+                                status_update_manager.update_status(filing["id"], {
+                                    "status": "error",
+                                    "step": "batch_error",
+                                    "message": f"Error during batch processing: {str(e)}",
+                                    "error": str(e)
+                                })
 
                     logger.info(f"Batch processing completed for {len(batch_filings)} applications")
                 except Exception as e:
