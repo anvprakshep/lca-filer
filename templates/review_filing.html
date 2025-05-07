@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Review Filing - H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<h1>Review Filing Details</h1>
+
+<div class="section">
+    <h2>Filing ID: {{ filing.id }}</h2>
+
+    <div class="filing-details">
+        <h3>Employer Information</h3>
+        <table>
+            <tr>
+                <th>Employer Name</th>
+                <td>{{ filing.data.employer.name }}</td>
+            </tr>
+            <tr>
+                <th>FEIN</th>
+                <td>{{ filing.data.employer.fein }}</td>
+            </tr>
+            {% if filing.data.employer.address %}
+            <tr>
+                <th>Address</th>
+                <td>{{ filing.data.employer.address }}<br>
+                    {{ filing.data.employer.city }}, {{ filing.data.employer.state }} {{ filing.data.employer.zip }}</td>
+            </tr>
+            {% endif %}
+        </table>
+
+        <h3>Job Information</h3>
+        <table>
+            <tr>
+                <th>Job Title</th>
+                <td>{{ filing.data.job.title }}</td>
+            </tr>
+            <tr>
+                <th>SOC Code</th>
+                <td>{{ filing.data.job.soc_code }}</td>
+            </tr>
+            {% if filing.data.job.duties %}
+            <tr>
+                <th>Job Duties</th>
+                <td>{{ filing.data.job.duties }}</td>
+            </tr>
+            {% endif %}
+        </table>
+
+        <h3>Wage Information</h3>
+        <table>
+            <tr>
+                <th>Wage Rate</th>
+                <td>${{ filing.data.wages.rate }} per {{ filing.data.wages.rate_type }}</td>
+            </tr>
+            <tr>
+                <th>Prevailing Wage</th>
+                <td>${{ filing.data.wages.prevailing_wage }}</td>
+            </tr>
+        </table>
+
+        <h3>Worksite Information</h3>
+        <table>
+            <tr>
+                <th>Primary Worksite</th>
+                <td>{{ filing.data.worksite.address }}<br>
+                    {{ filing.data.worksite.city }}, {{ filing.data.worksite.state }} {{ filing.data.worksite.zip }}</td>
+            </tr>
+            {% if filing.data.multiple_worksites %}
+            <tr>
+                <th>Multiple Worksites</th>
+                <td>Yes - {{ filing.data.additional_worksites|length }} additional location(s)</td>
+            </tr>
+            {% for worksite in filing.data.additional_worksites %}
+            <tr>
+                <th>Additional Worksite #{{ loop.index }}</th>
+                <td>{{ worksite.address }}<br>
+                    {{ worksite.city }}, {{ worksite.state }} {{ worksite.zip }}</td>
+            </tr>
+            {% endfor %}
+            {% endif %}
+        </table>
+
+        <h3>Process Options</h3>
+        <table>
+            <tr>
+                <th>Dynamic Field Capture</th>
+                <td>Enabled</td>
+            </tr>
+            <tr>
+                <th>Interactive Mode</th>
+                <td>Enabled - The system will prompt you for input when needed</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="actions">
+        <p>The system will now begin the automated filing process. You'll be prompted for input if any fields require human judgment.</p>
+
+        <form method="POST" action="{{ url_for('review_filing', filing_id=filing.id) }}">
+            <button type="submit">Start Processing</button>
+        </form>
+
+        <a href="{{ url_for('dashboard') }}" class="btn">Back to Dashboard</a>
+    </div>
+</div>
+{% endblock %}

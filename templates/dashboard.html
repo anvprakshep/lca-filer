@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="section">
+    <h2>Actions</h2>
+    <p>
+        <a href="{{ url_for('new_filing') }}" class="btn">Start New LCA Filing</a>
+        <a href="{{ url_for('upload_csv') }}" class="btn">Upload CSV for Batch Processing</a>
+    </p>
+</div>
+
+<div class="section">
+    <h2>Active Filings</h2>
+    {% if active_filings %}
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for filing in active_filings %}
+            <tr>
+                <td>{{ filing.id }}</td>
+                <td>{{ filing.status }}</td>
+                <td>{{ filing.timestamp }}</td>
+                <td>
+                    <a href="{{ url_for('filing_status', filing_id=filing.id) }}" class="btn">View Status</a>
+                    {% if filing.status == 'processing' and filing.interaction_needed %}
+                    <a href="{{ url_for('human_interaction', filing_id=filing.id) }}" class="btn">Input Required</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No active filings.</p>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h2>Completed Filings</h2>
+    {% if completed_filings %}
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Completion Time</th>
+                <th>Confirmation Number</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for filing in completed_filings %}
+            <tr>
+                <td>{{ filing.id }}</td>
+                <td>{{ filing.status }}</td>
+                <td>{{ filing.timestamp }}</td>
+                <td>{{ filing.confirmation_number }}</td>
+                <td>
+                    <a href="{{ url_for('filing_status', filing_id=filing.id) }}" class="btn">View Details</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No completed filings.</p>
+    {% endif %}
+</div>
+{% endblock %}

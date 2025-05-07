@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{% block title %}Captured Form Elements - H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<h1>Captured Form Elements</h1>
+
+<div class="section">
+    <h2>Currently Captured Elements</h2>
+
+    {% if captured_elements %}
+        {% for section_name, section_data in captured_elements.items() %}
+            <div class="captured-section">
+                <h3>{{ section_name }}</h3>
+
+                {% if section_data.screenshot_path %}
+                <div class="section-screenshot">
+                    <img src="{{ url_for('static', filename=section_data.screenshot_path) }}" alt="Screenshot of {{ section_name }}">
+                </div>
+                {% endif %}
+
+                <table class="elements-table">
+                    <thead>
+                        <tr>
+                            <th>Field ID</th>
+                            <th>Type</th>
+                            <th>Label</th>
+                            <th>Options</th>
+                            <th>Required</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for element in section_data.elements %}
+                        <tr>
+                            <td>{{ element.id }}</td>
+                            <td>{{ element.type }}</td>
+                            <td>{{ element.label }}</td>
+                            <td>
+                                {% if element.options %}
+                                <details>
+                                    <summary>{{ element.options|length }} options</summary>
+                                    <ul class="options-list">
+                                        {% for option in element.options %}
+                                        <li>{{ option.label }} ({{ option.value }})</li>
+                                        {% endfor %}
+                                    </ul>
+                                </details>
+                                {% endif %}
+                            </td>
+                            <td>{{ "Yes" if element.required else "No" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endfor %}
+    {% else %}
+        <p>No form elements have been captured yet. Start a filing to capture elements from the FLAG portal.</p>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h2>Field Registry</h2>
+    <p>The field registry contains all form fields that have been captured from the FLAG portal.</p>
+
+    <div id="field-registry-container">
+        <p>Loading field registry...</p>
+    </div>
+
+    <button id="update-registry-btn">Refresh Registry</button>
+</div>
+
+<div class="section">
+    <h2>Form Structure Comparison</h2>
+    <p>This compares the system's static form structure with dynamically captured elements.</p>
+
+    <div class="comparison-container">
+        <div class="static-structure">
+            <h3>Static Form Structure</h3>
+            <ul class="section-list">
+                {% for section in form_structure %}
+                <li>
+                    <details>
+                        <summary>{{ section.name }} ({{ section.fields|length }} fields)</summary>
+                        <ul class="field-list">
+                            {% for field in section.fields %}
+                            <li>
+                                <span class="field-id">{{ field.id }}</span>
+                                <span class="field-type">[{{ field.type }}]</span>
+                                {% if field.required %}
+                                <span class="required-badge">Required</span>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </details>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <div class="dynamic-structure">
+            <h3>Dynamically Captured Elements</h3>
+            <ul class="section-list">
+                {% for section_name, section_data in captured_elements.items() %}
+                <li>
+                    <details>
+                        <summary>{{ section_name }} ({{ section_data.elements|length }} elements)</summary>
+                        <ul class="field-list">
+                            {% for element in section_data.elements %}
+                            <li>
+                                <span class="field-id">{{ element.id }}</span>
+                                <span class="field-type">[{{ element.type }}]</span>
+                                {% if element.required %}
+                                <span class="required-badge">Required</span>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </details>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+
+<script>
+// JavaScript to handle field registry updates
+document.addEventListener('DOMContentLoaded', function() {
+    const registryContainer = document.getElementById('field-registry-container');
+    const updateButton = document.getElementById('update-registry-btn');
+
+    // Function to fetch and display the registry
+    function updateRegistry() {
+        fetch('/api/field-registry')
+            .then(response => response.json())
+            .then(data => {
+                // Clear container
+                registryContainer.innerHTML = '';
+
+                if (Object.keys(data).length === 0) {
+                    registryContainer.textContent = 'No fields in registry yet.';
+                    return;
+                }
+
+                // Create table
+                const table = document.createElement('table');
+                table.className = 'registry-table';
+
+                // Add header
+                const thead = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                ['Field ID', 'Type', 'Label', 'Options', 'Source', 'Last Updated'].forEach(text => {
+                    const th = document.createElement('th');
+                    th.textContent = text;
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+                table.appendChild(thead);
+
+                // Add body
+                const tbody = document.createElement('tbody');
+                for (const [fieldId, fieldData] of Object.entries(data)) {
+                    const row = document.createElement('tr');
+
+                    // Field ID
+                    const idCell = document.createElement('td');
+                    idCell.textContent = fieldId;
+                    row.appendChild(idCell);
+
+                    // Type
+                    const typeCell = document.createElement('td');
+                    typeCell.textContent = fieldData.type || 'Unknown';
+                    row.appendChild(typeCell);
+
+                    // Label
+                    const labelCell = document.createElement('td');
+                    labelCell.textContent = fieldData.label || fieldId;
+                    row.appendChild(labelCell);
+
+                    // Options
+                    const optionsCell = document.createElement('td');
+                    if (fieldData.options && fieldData.options.length > 0) {
+                        const details = document.createElement('details');
+                        const summary = document.createElement('summary');
+                        summary.textContent = `${fieldData.options.length} options`;
+                        details.appendChild(summary);
+
+                        const list = document.createElement('ul');
+                        list.className = 'options-list';
+                        fieldData.options.forEach(option => {
+                            const item = document.createElement('li');
+                            item.textContent = `${option.label || option.value}`;
+                            list.appendChild(item);
+                        });
+
+                        details.appendChild(list);
+                        optionsCell.appendChild(details);
+                    } else {
+                        optionsCell.textContent = 'None';
+                    }
+                    row.appendChild(optionsCell);
+
+                    // Source
+                    const sourceCell = document.createElement('td');
+                    sourceCell.textContent = fieldData.source || 'Dynamic capture';
+                    row.appendChild(sourceCell);
+
+                    // Last Updated
+                    const lastUpdatedCell = document.createElement('td');
+                    lastUpdatedCell.textContent = fieldData.last_updated || 'Unknown';
+                    row.appendChild(lastUpdatedCell);
+
+                    tbody.appendChild(row);
+                }
+                table.appendChild(tbody);
+
+                // Add to container
+                registryContainer.appendChild(table);
+            })
+            .catch(error => {
+                console.error('Error fetching registry:', error);
+                registryContainer.textContent = 'Error loading field registry.';
+            });
+    }
+
+    // Initial load
+    updateRegistry();
+
+    // Update button click handler
+    updateButton.addEventListener('click', updateRegistry);
+});
+</script>
+{% endblock %}

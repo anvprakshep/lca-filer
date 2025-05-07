@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Upload CSV - H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<h1>Batch Upload</h1>
+
+<div class="section">
+    <h2>Upload CSV File for Batch Processing</h2>
+    <p>Upload a CSV file containing multiple H-1B LCA applications for batch processing.</p>
+
+    <form method="POST" action="{{ url_for('upload_csv') }}" enctype="multipart/form-data">
+        <div class="form-group">
+            <label for="csv_file">Select CSV File:</label>
+            <input type="file" id="csv_file" name="csv_file" accept=".csv" required>
+            <small>Maximum file size: 16MB</small>
+        </div>
+
+        <div class="form-group">
+            <button type="submit" class="btn">Upload and Process</button>
+            <a href="{{ url_for('dashboard') }}" class="btn">Back to Dashboard</a>
+        </div>
+    </form>
+</div>
+
+<div class="section">
+    <h2>CSV File Format</h2>
+    <p>Your CSV file should include the following columns:</p>
+
+    <div class="csv-info">
+        <h3>Required Columns</h3>
+        <ul>
+            <li><strong>Application_ID</strong>: Unique identifier for each application</li>
+            <li><strong>Employer_Name</strong>: Legal name of the employer</li>
+            <li><strong>Employer_FEIN</strong>: Federal Employer Identification Number</li>
+            <li><strong>Job_Title</strong>: Position title for the H-1B worker</li>
+            <li><strong>SOC_Code</strong>: Standard Occupational Classification code</li>
+            <li><strong>Wage_Rate</strong>: Offered wage rate</li>
+            <li><strong>Wage_Rate_Type</strong>: Wage rate unit (hour, year, etc.)</li>
+            <li><strong>Prevailing_Wage</strong>: Prevailing wage rate</li>
+            <li><strong>Worksite_Address</strong>: Primary worksite address</li>
+            <li><strong>Worksite_City</strong>: Primary worksite city</li>
+            <li><strong>Worksite_State</strong>: Primary worksite state</li>
+            <li><strong>Worksite_Zip</strong>: Primary worksite ZIP code</li>
+        </ul>
+
+        <h3>Optional Columns</h3>
+        <ul>
+            <li><strong>Worker_Name</strong>: Name of the H-1B worker</li>
+            <li><strong>Attorney_Name</strong>: Name of the attorney</li>
+            <li><strong>Attorney_Firm</strong>: Attorney's firm name</li>
+            <li><strong>Additional_Worksite_*</strong>: Additional worksite information</li>
+            <li><strong>FLAG_Username</strong>: FLAG portal username (if different for each application)</li>
+            <li><strong>FLAG_Password</strong>: FLAG portal password (if different for each application)</li>
+        </ul>
+
+        <h3>Sample CSV Format</h3>
+        <div class="code-sample">
+            <pre>Application_ID,Employer_Name,Employer_FEIN,Job_Title,SOC_Code,Wage_Rate,Wage_Rate_Type,...
+1001,Tech Solutions Inc.,123456789,Software Engineer,15-1132,120000,year,...
+1002,Data Systems LLC,987654321,Data Scientist,15-2051,130000,year,...</pre>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Generate Sample CSV</h2>
+    <p>Need a template to get started? You can generate a sample CSV file with test data.</p>
+
+    <form method="POST" action="{{ url_for('generate_sample_csv') }}">
+        <div class="form-group">
+            <label for="sample_count">Number of Sample Applications:</label>
+            <select id="sample_count" name="sample_count">
+                <option value="3">3 (Default)</option>
+                <option value="5">5</option>
+                <option value="10">10</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <button type="submit" class="btn">Generate Sample CSV</button>
+        </div>
+    </form>
+</div>
+{% endblock %}

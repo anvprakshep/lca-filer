@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<div class="header-section">
+    <h1>H-1B LCA Filing Automation System</h1>
+    <p class="lead">Streamline your Labor Condition Application filing process with intelligent automation</p>
+</div>
+
+<div class="section">
+    <h2>Automate Your DOL FLAG Portal Process</h2>
+    <p>Our system helps immigration professionals automate the process of filing Labor Condition Applications (LCAs) on the Department of Labor's FLAG portal.</p>
+
+    <div class="features-grid">
+        <div class="feature-item">
+            <h3>Intelligent Automation</h3>
+            <p>AI-powered decision making handles complex form fields and adapts to portal changes</p>
+        </div>
+
+        <div class="feature-item">
+            <h3>Human-in-the-Loop</h3>
+            <p>Get prompted for input only when human judgment is required</p>
+        </div>
+
+        <div class="feature-item">
+            <h3>Batch Processing</h3>
+            <p>Process multiple applications simultaneously with CSV uploads</p>
+        </div>
+
+        <div class="feature-item">
+            <h3>Comprehensive Reporting</h3>
+            <p>Get detailed reports and status tracking for all filings</p>
+        </div>
+    </div>
+
+    {% if 'user_id' not in session %}
+    <div class="cta-section">
+        <p>Ready to automate your LCA filings?</p>
+        <a href="{{ url_for('login') }}" class="btn">Login to Get Started</a>
+    </div>
+    {% else %}
+    <div class="cta-section">
+        <a href="{{ url_for('dashboard') }}" class="btn">Go to Dashboard</a>
+        <a href="{{ url_for('new_filing') }}" class="btn">Start New Filing</a>
+    </div>
+    {% endif %}
+</div>
+
+<div class="section">
+    <h2>How It Works</h2>
+    <div class="process-steps">
+        <div class="step">
+            <span class="step-number">1</span>
+            <h3>Data Input</h3>
+            <p>Enter application details manually or upload a CSV with multiple applications</p>
+        </div>
+
+        <div class="step">
+            <span class="step-number">2</span>
+            <h3>Automated Processing</h3>
+            <p>Our system navigates the FLAG portal and fills out forms automatically</p>
+        </div>
+
+        <div class="step">
+            <span class="step-number">3</span>
+            <h3>Human Interaction</h3>
+            <p>For critical decisions, you'll be prompted to provide input when needed</p>
+        </div>
+
+        <div class="step">
+            <span class="step-number">4</span>
+            <h3>Completion</h3>
+            <p>Receive confirmation numbers and detailed reports for all submissions</p>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Key Benefits</h2>
+    <ul class="benefits-list">
+        <li><strong>Save Time:</strong> Reduce manual data entry and form navigation</li>
+        <li><strong>Increase Accuracy:</strong> Minimize human error in form completion</li>
+        <li><strong>Improve Efficiency:</strong> Process multiple applications simultaneously</li>
+        <li><strong>Stay Current:</strong> System adapts to changes in the FLAG portal</li>
+        <li><strong>Maintain Control:</strong> Human oversight for critical decisions</li>
+    </ul>
+</div>
+
+{% if 'user_id' not in session %}
+<div class="section">
+    <h2>Get Started</h2>
+    <p>Log in to access the dashboard and start automating your LCA filings.</p>
+    <a href="{{ url_for('login') }}" class="btn">Login Now</a>
+</div>
+{% endif %}
+{% endblock %}

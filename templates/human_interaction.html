@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}Input Required - H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<h1>Human Input Required</h1>
+
+<div class="section">
+    <h2>Filing: {{ filing.id }}</h2>
+    <p>Current stage: {{ interaction.section_name }}</p>
+
+    {% if interaction.has_errors %}
+    <div class="error-summary">
+        <h3>Error Messages</h3>
+        <ul class="error-list">
+            {% for error in interaction.error_messages %}
+            <li class="error-item">{{ error }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <div class="section-screenshot">
+        <h3>Form Section Preview</h3>
+        {% if interaction.screenshot_path %}
+        <img src="{{ url_for('static', filename=interaction.screenshot_path) }}" alt="Screenshot of current form section">
+        {% else %}
+        <p>No screenshot available</p>
+        {% endif %}
+    </div>
+
+    <p>{{ interaction.guidance }}</p>
+
+    <form method="POST" action="{{ url_for('human_interaction', filing_id=filing.id) }}" id="interaction-form">
+        {% for field in interaction.fields %}
+        <div class="form-group">
+            <h3>
+                {{ field.label }}
+                <span class="field-info-icon" data-field-id="{{ field.id }}">ℹ️</span>
+                <button class="field-preview-button" data-field-id="{{ field.id }}">Show Preview</button>
+            </h3>
+
+            {% if field.description %}
+            <p class="field-description">{{ field.description }}</p>
+            {% endif %}
+
+            {% if field.field_errors %}
+            <div class="field-errors">
+                {% for error in field.field_errors %}
+                <p class="field-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if field.type == "text" or field.type == "email" or field.type == "number" or field.type == "tel" %}
+                <input type="{{ field.type }}" id="{{ field.id }}" name="{{ field.id }}"
+                       value="{{ field.default_value|default('') }}"
+                       {% if field.required %}required{% endif %}
+                       {% if field.pattern %}pattern="{{ field.pattern }}"{% endif %}
+                       {% if field.min %}min="{{ field.min }}"{% endif %}
+                       {% if field.max %}max="{{ field.max }}"{% endif %}>
+
+            {% elif field.type == "textarea" %}
+                <textarea id="{{ field.id }}" name="{{ field.id }}"
+                          {% if field.required %}required{% endif %}>{{ field.default_value|default('') }}</textarea>
+
+            {% elif field.type == "select" %}
+                <select id="{{ field.id }}" name="{{ field.id }}" {% if field.required %}required{% endif %}>
+                    <option value="">Select an option</option>
+                    {% for option in field.options %}
+                    <option value="{{ option.value }}" {% if option.value == field.default_value or option.selected %}selected{% endif %}>
+                        {{ option.label }}
+                    </option>
+                    {% endfor %}
+                </select>
+
+            {% elif field.type == "radio" %}
+                {% for option in field.options %}
+                <div class="radio-option">
+                    <label>
+                        <input type="radio" name="{{ field.id }}" value="{{ option.value }}"
+                               {% if option.value == field.default_value or option.checked %}checked{% endif %}
+                               {% if field.required %}required{% endif %}>
+                        {{ option.label }}
+                    </label>
+                </div>
+                {% endfor %}
+
+            {% elif field.type == "checkbox" %}
+                <label>
+                    <input type="checkbox" id="{{ field.id }}" name="{{ field.id }}" value="true"
+                           {% if field.default_value %}checked{% endif %}>
+                    {{ field.label }}
+                </label>
+
+            {% elif field.type == "date" %}
+                <input type="date" id="{{ field.id }}" name="{{ field.id }}"
+                       value="{{ field.default_value|default('') }}"
+                       {% if field.required %}required{% endif %}>
+
+            {% elif field.type == "file" %}
+                <input type="file" id="{{ field.id }}" name="{{ field.id }}"
+                       {% if field.required %}required{% endif %}
+                       {% if field.accept %}accept="{{ field.accept }}"{% endif %}>
+                <p class="file-note">Note: This file will be uploaded to the FLAG portal during the automation process.</p>
+
+            {% elif field.type == "captcha" %}
+                <div class="captcha-field">
+                    <p>CAPTCHA required. Please enter the characters shown in the image above.</p>
+                    <input type="text" id="{{ field.id }}" name="{{ field.id }}" required>
+                </div>
+
+            {% else %}
+                <!-- Unknown field type - use text input as fallback -->
+                <input type="text" id="{{ field.id }}" name="{{ field.id }}"
+                       value="{{ field.default_value|default('') }}"
+                       {% if field.required %}required{% endif %}>
+                <p class="field-note">Note: This field is of type '{{ field.type }}' which is not directly supported. Please enter the appropriate value.</p>
+            {% endif %}
+
+            {% if field.validation_message %}
+            <p class="validation-message">{{ field.validation_message }}</p>
+            {% endif %}
+
+            {% if field.note %}
+            <p class="field-note"><em>Note: {{ field.note }}</em></p>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        <div class="form-group">
+            <button type="submit">Submit Input</button>
+        </div>
+    </form>
+</div>
+
+<div class="section">
+    <h3>Filing Status</h3>
+    <p><strong>Status:</strong> {{ filing.status }}</p>
+
+    {% if filing.result and filing.result.steps_completed %}
+    <div class="completed-steps">
+        <h4>Completed Steps</h4>
+        <ul>
+            {% for step in filing.result.steps_completed %}
+            <li>{{ step|replace('_', ' ')|title }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <a href="{{ url_for('filing_status', filing_id=filing.id) }}" class="btn">View Full Status</a>
+    <a href="{{ url_for('dashboard') }}" class="btn">Back to Dashboard</a>
+</div>
+
+<script src="{{ url_for('static', filename='js/form-capture.js') }}"></script>
+{% endblock %}

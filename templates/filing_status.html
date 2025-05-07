@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Filing Status - H-1B LCA Filing Automation{% endblock %}
+
+{% block content %}
+<h1>Filing Status</h1>
+
+<div class="section">
+    <h2>Filing ID: {{ filing.id }}</h2>
+
+    <div class="status-info">
+        <p><strong>Status:</strong> {{ filing.status }}</p>
+        <p><strong>Started:</strong> {{ filing.timestamp }}</p>
+        {% if filing.completed_at %}
+        <p><strong>Completed:</strong> {{ filing.completed_at }}</p>
+        {% endif %}
+        {% if filing.status == 'success' and filing.result and filing.result.confirmation_number %}
+        <p><strong>Confirmation Number:</strong> {{ filing.result.confirmation_number }}</p>
+        {% endif %}
+    </div>
+
+    {% if needs_interaction %}
+    <div class="interaction-required">
+        <h3>Your Input is Required</h3>
+        <p>The system requires your input to continue processing this filing.</p>
+        <a href="{{ url_for('human_interaction', filing_id=filing.id) }}" class="btn">Provide Input</a>
+    </div>
+    {% endif %}
+
+    {% if filing.result and filing.result.steps_completed %}
+    <div class="progress-section">
+        <h3>Progress</h3>
+        <ul class="progress-list">
+            {% for step in filing.result.steps_completed %}
+            <li>
+                <span class="step-name">{{ step|replace('_', ' ')|title }}</span>
+                <span class="step-status completed">Completed</span>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    {% if filing.screenshots %}
+    <div class="screenshots-section">
+        <h3>Screenshots</h3>
+        <div class="screenshot-gallery">
+            {% for screenshot in filing.screenshots %}
+            <div class="screenshot-item">
+                <img src="{{ url_for('static', filename=screenshot.path) }}" alt="{{ screenshot.description }}">
+                <div class="screenshot-caption">{{ screenshot.description }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% if filing.status == 'error' and filing.error %}
+    <div class="error-details">
+        <h3>Error Details</h3>
+        <p class="error-message">{{ filing.error }}</p>
+    </div>
+    {% endif %}
+
+    <div class="actions">
+        {% if filing.status == 'pending' %}
+        <form method="POST" action="{{ url_for('review_filing', filing_id=filing.id) }}">
+            <button type="submit">Start Processing</button>
+        </form>
+        {% endif %}
+
+        <a href="{{ url_for('dashboard') }}" class="btn">Back to Dashboard</a>
+    </div>
+</div>
+{% endblock %}
