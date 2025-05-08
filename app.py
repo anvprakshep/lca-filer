@@ -7,13 +7,14 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, time
 import secrets
 import threading
 
 # Import LCA filer components
 from lca_filer import LCAFiler
 from config.config import Config
+from utils.authenticator import TwoFactorAuth
 from utils.file_utils import FileUtils
 from utils.logger import get_logger, log_exception
 from utils.interactive_filer import InteractiveFiler
@@ -179,6 +180,156 @@ class InteractionManager:
 interaction_manager = InteractionManager()
 
 
+def enhanced_status_update_callback(filing_id: str, update: Dict[str, Any]) -> None:
+    """
+    Enhanced status update callback with more detailed stage information.
+
+    Args:
+        filing_id: Filing ID to update
+        update: Status update dictionary with detailed stage info
+    """
+    # Add timestamp if not present
+    if "timestamp" not in update:
+        update["timestamp"] = datetime.now().isoformat()
+
+    # Add more specific information based on the current step
+    if "step" in update:
+        step = update["step"]
+        # Add more details for specific steps
+        if step == "navigation":
+            update["stage"] = "Connecting to FLAG portal"
+            update["progress"] = 10
+        elif step == "login":
+            update["stage"] = "Authenticating with FLAG portal"
+            update["progress"] = 20
+        elif step == "form_type_selection":
+            update["stage"] = "Selecting H-1B form type"
+            update["progress"] = 25
+        elif "section" in step:
+            # Extract section name if available
+            section_name = update.get("current_section", "form section")
+            update["stage"] = f"Processing {section_name}"
+            # Calculate approx progress - sections are typically 30-80% of process
+            section_num = 0
+            if "_" in step:
+                try:
+                    section_num = int(step.split("_")[1])
+                except ValueError:
+                    pass
+            progress = 30 + min(50, section_num * 10)
+            update["progress"] = progress
+        elif step == "submission":
+            update["stage"] = "Submitting form to DOL"
+            update["progress"] = 90
+        elif step == "complete":
+            update["stage"] = "Filing completed"
+            update["progress"] = 100
+
+    # Call the original status update manager
+    status_update_manager.update_status(filing_id, update)
+
+    # Log detailed update
+    detail_str = f"{update.get('status', 'unknown')} - {update.get('stage', '')} - {update.get('message', '')}"
+    logger.info(f"Filing {filing_id} status update: {detail_str}")
+
+
+def prepare_human_interaction_template_data(interaction_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Prepare data for the human interaction template with improved field rendering.
+
+    Args:
+        interaction_data: Raw interaction data from the filing process
+
+    Returns:
+        Enhanced template data dictionary
+    """
+    # Prepare data for template
+    template_data = {
+        'interaction': {
+            'section_name': interaction_data.get('section_name', 'Current Form Section'),
+            'guidance': interaction_data.get('guidance', 'Please complete the following fields'),
+            'screenshot_path': interaction_data.get('screenshot_path', ''),
+            'error_messages': interaction_data.get('error_messages', []),
+            'has_errors': interaction_data.get('has_errors', False),
+            'fields': []
+        }
+    }
+
+    # Group fields by type for better organization
+    grouped_fields = {
+        'text': [],
+        'select': [],
+        'checkbox': [],
+        'radio': [],
+        'complex': [],
+        'other': []
+    }
+
+    # Process each field to enhance rendering in the template
+    for field in interaction_data.get('fields', []):
+        # Basic field data
+        field_type = field.get('type', 'text')
+
+        # Create a field object with all needed rendering information
+        field_obj = {
+            'id': field.get('id', ''),
+            'name': field.get('name', ''),
+            'label': field.get('label', field.get('id', 'Field')),
+            'type': field_type,
+            'default_value': field.get('default_value', ''),
+            'required': field.get('required', False),
+            'description': field.get('description', ''),
+            'field_errors': field.get('field_errors', []),
+            'validation_message': field.get('validation_message', ''),
+            'note': field.get('note', ''),
+            'placeholder': field.get('placeholder', ''),
+            'pattern': field.get('pattern', ''),
+            'min': field.get('min', ''),
+            'max': field.get('max', ''),
+            'step': field.get('step', ''),
+            'accept': field.get('accept', ''),  # For file inputs
+            'maxlength': field.get('maxlength', ''),
+            'disabled': field.get('disabled', False),
+            'read_only': field.get('read_only', False)
+        }
+
+        # Handle options for select, radio, etc.
+        if 'options' in field:
+            field_obj['options'] = []
+            for option in field['options']:
+                field_obj['options'].append({
+                    'value': option.get('value', ''),
+                    'label': option.get('label', option.get('value', '')),
+                    'selected': option.get('selected', False) or option.get('checked', False),
+                    'disabled': option.get('disabled', False),
+                    'group': option.get('group', None)
+                })
+
+        # Add to appropriate group
+        if field_type in ['text', 'password', 'email', 'number', 'tel', 'url', 'date', 'textarea']:
+            grouped_fields['text'].append(field_obj)
+        elif field_type in ['select']:
+            grouped_fields['select'].append(field_obj)
+        elif field_type == 'checkbox':
+            grouped_fields['checkbox'].append(field_obj)
+        elif field_type == 'radio':
+            grouped_fields['radio'].append(field_obj)
+        elif field_type in ['file', 'autocomplete', 'combobox']:
+            grouped_fields['complex'].append(field_obj)
+        else:
+            grouped_fields['other'].append(field_obj)
+
+    # Add all fields to the template data
+    template_data['interaction']['grouped_fields'] = grouped_fields
+
+    # Also include flat list for backward compatibility
+    all_fields = []
+    for group in grouped_fields.values():
+        all_fields.extend(group)
+    template_data['interaction']['fields'] = all_fields
+
+    return template_data
+
 # Interaction callback for the interactive filer
 def handle_interaction(filing_id, interaction_data):
     """Handle required interaction from the filing process"""
@@ -224,13 +375,25 @@ async def async_initialize_lca_filer():
         # Create a new LCA filer
         filer = LCAFiler()
 
-        # Explicitly initialize browser and other components
+        # Explicitly initialize browser and other components with retry logic
         logger.info("Initializing LCA filer components")
-        if not await filer.initialize():
-            logger.error("Failed to initialize LCA filer components")
+        for attempt in range(3):  # Try up to 3 times
+            try:
+                if await filer.initialize():
+                    logger.info("LCA filer initialization successful")
+                    break
+                else:
+                    logger.error(f"Failed to initialize LCA filer on attempt {attempt+1}")
+                    if attempt < 2:  # Don't wait after the last attempt
+                        await asyncio.sleep(2)  # Wait before retry
+            except Exception as e:
+                logger.error(f"Error during initialization attempt {attempt+1}: {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(2)  # Wait before retry
+        else:
+            # If we get here, all attempts failed
+            logger.error("All initialization attempts failed")
             return None, None
-
-        logger.info("LCA filer initialization successful")
 
         # Create interactive filer with proper callback
         interactive = InteractiveFiler(filer, handle_interaction)
@@ -456,6 +619,36 @@ def review_filing(filing_id):
                 if not lca_filer or not interactive_filer:
                     raise Exception("Failed to initialize LCA filer")
 
+            # ADD THIS SECTION: Configure TOTP from application data
+            credentials = filing["data"].get("credentials", {})
+            username = credentials.get("username")
+            totp_secret = credentials.get("totp_secret")
+
+            if username and totp_secret:
+                # Enable TOTP if not already
+                if not lca_filer.config.get("totp", "enabled", default=False):
+                    lca_filer.config.set(True, "totp", "enabled")
+                    logger.info("Enabled TOTP authentication")
+
+                # Initialize two-factor auth if needed
+                if not lca_filer.two_factor_auth:
+                    totp_config = lca_filer.config.get("totp")
+                    if "secrets" not in totp_config:
+                        totp_config["secrets"] = {}
+                    lca_filer.two_factor_auth = TwoFactorAuth(totp_config)
+                    logger.info("Two-factor authentication initialized")
+
+                # Set the secret
+                lca_filer.two_factor_auth.totp_secrets[username] = totp_secret
+                lca_filer.config.set_totp_secret(username, totp_secret)
+                logger.info(f"Configured TOTP secret for {username} from application data")
+
+                # Test the secret
+                if lca_filer.two_factor_auth:
+                    test_code = lca_filer.two_factor_auth.generate_totp_code(username)
+                    logger.info(f"Current TOTP code for testing: {test_code}")
+            # END ADDED SECTION
+
             # Configure status update callback
             interactive_filer.set_status_update_callback(handle_status_update)
 
@@ -472,7 +665,6 @@ def review_filing(filing_id):
             # Start the filing process in a separate thread
             from threading import Thread
 
-            # Update the _process_with_semaphore function in app.py
             def process_filing(filer, filing_data):
                 try:
                     # Set a flag to indicate this filing is active
@@ -651,51 +843,9 @@ def human_interaction(filing_id):
             logger.error(f"Error processing human interaction: {str(e)}")
             flash(f"Error submitting input: {str(e)}", 'danger')
 
-    # Prepare data for template
-    template_data = {
-        'filing': filing,
-        'interaction': {
-            'section_name': interaction_data.get('section_name', 'Current Form Section'),
-            'guidance': interaction_data.get('guidance', 'Please complete the following fields'),
-            'screenshot_path': interaction_data.get('screenshot_path', ''),
-            'error_messages': interaction_data.get('error_messages', []),
-            'has_errors': interaction_data.get('has_errors', False),
-            'fields': []
-        }
-    }
-
-    # Process each field to enhance rendering in the template
-    for field in interaction_data.get('fields', []):
-        # Create a field object with all needed rendering information
-        field_obj = {
-            'id': field.get('id', ''),
-            'label': field.get('label', field.get('id', 'Field')),
-            'type': field.get('type', 'text'),
-            'default_value': field.get('default_value', ''),
-            'required': field.get('required', False),
-            'description': field.get('description', ''),
-            'field_errors': field.get('field_errors', []),
-            'validation_message': field.get('validation_message', ''),
-            'note': field.get('note', ''),
-            'placeholder': field.get('placeholder', ''),
-            'pattern': field.get('pattern', ''),
-            'min': field.get('min', ''),
-            'max': field.get('max', ''),
-            'step': field.get('step', ''),
-            'accept': field.get('accept', '')  # For file inputs
-        }
-
-        # Handle options for select, radio, etc.
-        if 'options' in field:
-            field_obj['options'] = []
-            for option in field['options']:
-                field_obj['options'].append({
-                    'value': option.get('value', ''),
-                    'label': option.get('label', option.get('value', '')),
-                    'selected': option.get('selected', False) or option.get('checked', False)
-                })
-
-        template_data['interaction']['fields'].append(field_obj)
+    # Use the enhanced template data preparation
+    template_data = prepare_human_interaction_template_data(interaction_data)
+    template_data['filing'] = filing
 
     return render_template('human_interaction.html', **template_data)
 
@@ -1014,6 +1164,122 @@ def capture_display():
     return render_template('capture_display.html',
                            captured_elements=captured_elements,
                            form_structure=form_structure)
+
+
+@app.route('/api/totp/test', methods=['POST'])
+@login_required
+def test_totp_configuration():
+    """API endpoint to test TOTP configuration."""
+    try:
+        data = request.json
+        username = data.get('username')
+        totp_secret = data.get('totp_secret')
+
+        if not username:
+            return jsonify({"error": "Username is required"}), 400
+
+        global lca_filer, interactive_filer
+
+        # Initialize filer if needed
+        if not lca_filer or not interactive_filer:
+            future = asyncio.run_coroutine_threadsafe(async_initialize_lca_filer(), loop)
+            lca_filer, interactive_filer = future.result()
+            if not lca_filer or not interactive_filer:
+                return jsonify({"error": "Failed to initialize LCA filer"}), 500
+
+        # If a secret was provided, configure it first
+        if totp_secret:
+            # Configure TOTP
+            if not lca_filer.config.get("totp", "enabled", default=False):
+                lca_filer.config.set(True, "totp", "enabled")
+
+            # Initialize two-factor auth if needed
+            if not lca_filer.two_factor_auth:
+                totp_config = lca_filer.config.get("totp", {})
+                if "secrets" not in totp_config:
+                    totp_config["secrets"] = {}
+                lca_filer.two_factor_auth = TwoFactorAuth(totp_config)
+
+            # Set the secret
+            lca_filer.two_factor_auth.totp_secrets[username] = totp_secret
+            lca_filer.config.set_totp_secret(username, totp_secret)
+
+        # Now test the configuration
+        verification_result = lca_filer.verify_totp_configuration(username)
+
+        # If we don't have a working configuration, return error
+        if verification_result.get("error"):
+            return jsonify(verification_result), 400
+
+        # Return success with current code and remaining time
+        return jsonify({
+            "success": True,
+            "username": username,
+            "current_code": verification_result.get("current_code"),
+            "remaining_seconds": verification_result.get("remaining_seconds"),
+            "message": f"TOTP configured successfully. Current code: {verification_result.get('current_code')}"
+        })
+
+    except Exception as e:
+        logger.error(f"Error testing TOTP configuration: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/totp/configure', methods=['POST'])
+@login_required
+def configure_totp():
+    """API endpoint to configure TOTP for a username."""
+    try:
+        data = request.json
+        username = data.get('username')
+        totp_secret = data.get('totp_secret')
+
+        if not username or not totp_secret:
+            return jsonify({"error": "Username and TOTP secret are required"}), 400
+
+        global lca_filer, interactive_filer
+
+        # Initialize filer if needed
+        if not lca_filer or not interactive_filer:
+            future = asyncio.run_coroutine_threadsafe(async_initialize_lca_filer(), loop)
+            lca_filer, interactive_filer = future.result()
+            if not lca_filer or not interactive_filer:
+                return jsonify({"error": "Failed to initialize LCA filer"}), 500
+
+        # Configure TOTP
+        if not lca_filer.config.get("totp", "enabled", default=False):
+            lca_filer.config.set(True, "totp", "enabled")
+
+        # Initialize two-factor auth if needed
+        if not lca_filer.two_factor_auth:
+            totp_config = lca_filer.config.get("totp", {})
+            if "secrets" not in totp_config:
+                totp_config["secrets"] = {}
+            lca_filer.two_factor_auth = TwoFactorAuth(totp_config)
+
+        # Set the secret
+        lca_filer.two_factor_auth.totp_secrets[username] = totp_secret
+        lca_filer.config.set_totp_secret(username, totp_secret)
+
+        # Save the configuration
+        config_file = lca_filer.config.config.get("config_path", "config.json")
+        lca_filer.config.save(config_file)
+
+        # Generate a test code
+        verification_result = lca_filer.verify_totp_configuration(username)
+
+        # Return result
+        return jsonify({
+            "success": True,
+            "username": username,
+            "current_code": verification_result.get("current_code"),
+            "remaining_seconds": verification_result.get("remaining_seconds"),
+            "message": "TOTP secret saved to configuration"
+        })
+
+    except Exception as e:
+        logger.error(f"Error configuring TOTP: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':

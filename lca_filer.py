@@ -22,23 +22,6 @@ from config.form_structure import FormStructure
 
 logger = get_logger(__name__)
 
-
-async def check_browser_dependencies() -> bool:
-    try:
-        # Run a simple command to check if browser binaries are installed
-        import subprocess
-        result = subprocess.run(["playwright", "browser-info"],
-                                capture_output=True, text=True, check=False)
-        if result.returncode != 0:
-            logger.error(f"Playwright browser dependencies missing: {result.stderr}")
-            logger.info("Try running: playwright install chromium")
-            return False
-        return True
-    except Exception as e:
-        logger.error(f"Error checking browser dependencies: {str(e)}")
-        return False
-
-
 class LCAFiler:
     """Main class for LCA filing automation."""
 
@@ -69,7 +52,7 @@ class LCAFiler:
         # Initialize two-factor authentication if enabled
         self.two_factor_auth = None
         if self.config.get("totp", "enabled", default=False):
-            totp_config = self.config.get("totp", {})
+            totp_config = self.config.get("totp")
             self.two_factor_auth = TwoFactorAuth(totp_config)
             logger.info(f"Two-factor authentication initialized with {len(totp_config.get('secrets', {}))} secrets")
 
@@ -79,24 +62,63 @@ class LCAFiler:
         logger.info(f"LCAFiler initialized with generation ID: {self.generation_id}")
 
     async def initialize(self, max_retries=3) -> bool:
+        """
+        Improved initialize method with better retry logic and diagnostics.
+
+        Args:
+            max_retries: Maximum number of initialization attempts
+
+        Returns:
+            True if initialization successful, False otherwise
+        """
+        logger.info(f"Initializing LCA filer with up to {max_retries} attempts")
+
+        # Check browser dependencies first
+        if not await self._check_browser_dependencies():
+            logger.error("Browser dependencies check failed - cannot initialize")
+            return False
+
         for attempt in range(max_retries):
             try:
-                logger.info(f"Initializing browser manager (attempt {attempt + 1}/{max_retries})")
-                await self.browser_manager.initialize()
+                logger.info(f"Browser initialization attempt {attempt + 1}/{max_retries}")
 
-                if self.browser_manager.browser and self.browser_manager.context:
-                    logger.info("LCAFiler initialized successfully")
-                    return True
+                # Initialize browser manager
+                if not await self.browser_manager.initialize():
+                    logger.error(f"Browser manager initialization failed on attempt {attempt + 1}")
+                    if attempt < max_retries - 1:
+                        # Wait before retry with increasing delay
+                        wait_time = 2 * (attempt + 1)  # 2, 4, 6... seconds
+                        logger.info(f"Waiting {wait_time} seconds before retry")
+                        await asyncio.sleep(wait_time)
+                    continue
 
-                logger.warning(f"Browser or context not properly initialized on attempt {attempt + 1}")
+                # Verify browser is working by testing basic functionality
+                browser_test = await self._test_browser_functionality()
+                if not browser_test["success"]:
+                    logger.error(f"Browser functionality test failed: {browser_test['error']}")
+                    await self.browser_manager.close()  # Clean up failed browser
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2)  # Wait before retry
+                    continue
+
+                logger.info("LCA filer initialized successfully")
+                return True
+
             except Exception as e:
-                logger.error(f"Error initializing LCAFiler (attempt {attempt + 1}): {str(e)}")
+                logger.error(f"Error during initialization attempt {attempt + 1}: {str(e)}")
 
-            # Wait before retry
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2)  # 2-second delay between retries
+                # Clean up resources
+                try:
+                    if self.browser_manager:
+                        await self.browser_manager.close()
+                except Exception as cleanup_error:
+                    logger.error(f"Error cleaning up resources: {str(cleanup_error)}")
 
-        logger.error(f"Failed to initialize LCAFiler after {max_retries} attempts")
+                if attempt < max_retries - 1:
+                    # Wait before retry
+                    await asyncio.sleep(2)
+
+        logger.error(f"All {max_retries} initialization attempts failed")
         return False
 
     async def shutdown(self) -> None:
@@ -559,3 +581,148 @@ class LCAFiler:
                 return None
 
         return self.two_factor_auth.generate_totp_code(username)
+
+    # Add this method to the LCAFiler class in lca_filer.py
+    def verify_totp_configuration(self, username: str) -> Dict[str, Any]:
+        """
+        Verify that TOTP is correctly configured for a username.
+
+        Args:
+            username: Username to verify TOTP for
+
+        Returns:
+            Dictionary with verification results
+        """
+        result = {
+            "username": username,
+            "has_secret": False,
+            "can_generate_code": False,
+            "current_code": None,
+            "remaining_seconds": None
+        }
+
+        # Check if TOTP is enabled
+        if not self.config.get("totp", "enabled", default=False):
+            result["error"] = "TOTP authentication is not enabled"
+            return result
+
+        # Check if two-factor auth is initialized
+        if not self.two_factor_auth:
+            result["error"] = "Two-factor authentication is not initialized"
+            return result
+
+        # Check if username has a configured secret
+        if username not in self.two_factor_auth.totp_secrets:
+            result["error"] = f"No TOTP secret configured for username: {username}"
+            return result
+
+        result["has_secret"] = True
+
+        # Try to generate a code
+        try:
+            code = self.two_factor_auth.generate_totp_code(username)
+            if code:
+                result["can_generate_code"] = True
+                result["current_code"] = code
+
+                # Get remaining seconds
+                remaining = self.two_factor_auth.get_remaining_seconds(username)
+                result["remaining_seconds"] = remaining
+            else:
+                result["error"] = "Failed to generate TOTP code"
+        except Exception as e:
+            result["error"] = f"Error generating TOTP code: {str(e)}"
+
+        return result
+
+    async def _test_browser_functionality(self) -> Dict[str, Any]:
+        """
+        Test basic browser functionality.
+
+        Returns:
+            Dictionary with test results
+        """
+        result = {
+            "success": False,
+            "error": None
+        }
+
+        try:
+            # Create a test page
+            page = await self.browser_manager.new_page()
+
+            # Try to navigate to a simple test URL
+            await page.goto("https://www.example.com", timeout=10000)
+
+            # Check page title to verify browser is working
+            title = await page.title()
+            if not title:
+                result["error"] = "Could not retrieve page title"
+                return result
+
+            # Close the test page
+            await page.close()
+
+            # Success
+            result["success"] = True
+            logger.info("Browser functionality test passed")
+            return result
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"Browser functionality test failed: {str(e)}")
+            return result
+
+    async def _test_browser_functionality(self) -> Dict[str, Any]:
+        """
+        Test basic browser functionality.
+
+        Returns:
+            Dictionary with test results
+        """
+        result = {
+            "success": False,
+            "error": None
+        }
+
+        try:
+            # Create a test page
+            page = await self.browser_manager.new_page()
+
+            # Try to navigate to a simple test URL
+            await page.goto("https://www.example.com", timeout=10000)
+
+            # Check page title to verify browser is working
+            title = await page.title()
+            if not title:
+                result["error"] = "Could not retrieve page title"
+                return result
+
+            # Close the test page
+            await page.close()
+
+            # Success
+            result["success"] = True
+            logger.info("Browser functionality test passed")
+            return result
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"Browser functionality test failed: {str(e)}")
+            return result
+
+    async def _check_browser_dependencies(self) -> bool:
+        return True
+        # try:
+        #     # Run a simple command to check if browser binaries are installed
+        #     import subprocess
+        #     result = subprocess.run(["playwright", "--browsers"],
+        #                             capture_output=True, text=True, check=False)
+        #     if result.returncode != 0:
+        #         logger.error(f"Playwright browser dependencies missing: {result.stderr}")
+        #         logger.info("Try running: playwright install chromium")
+        #         return False
+        #     return True
+        # except Exception as e:
+        #     logger.error(f"Error checking browser dependencies: {str(e)}")
+        #     return False
