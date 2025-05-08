@@ -251,9 +251,17 @@ def prepare_human_interaction_template_data(interaction_data: Dict[str, Any]) ->
             'screenshot_path': interaction_data.get('screenshot_path', ''),
             'error_messages': interaction_data.get('error_messages', []),
             'has_errors': interaction_data.get('has_errors', False),
+            'has_missing_elements': interaction_data.get('has_missing_elements', False),
             'fields': []
         }
     }
+
+    # Add special note for missing elements
+    if interaction_data.get('has_missing_elements', False):
+        template_data['interaction']['missing_elements_note'] = (
+            "The automation couldn't find some expected elements. "
+            "Please make selections based on what you see in the screenshot."
+        )
 
     # Group fields by type for better organization
     grouped_fields = {
@@ -739,7 +747,7 @@ def filing_status(filing_id):
     screenshots = []
     if "result" in filing and "steps_completed" in filing["result"]:
         # Find screenshots for this filing
-        screenshot_dir = f"static/screenshots/{filing.get('generation_id', 'global')}/{filing_id}"
+        screenshot_dir = f"screenshots/{filing.get('generation_id', 'global')}/{filing_id}"
         if os.path.exists(screenshot_dir):
             for filename in os.listdir(screenshot_dir):
                 if filename.endswith(".png"):

@@ -179,6 +179,20 @@
     </div>
     {% endif %}
 
+    {% if interaction.has_missing_elements %}
+        <div class="alert alert-warning">
+            <strong>Automation could not find some elements!</strong>
+            <p>{{ interaction.missing_elements_note }}</p>
+            <p>Please refer to the screenshot below and select the appropriate options.</p>
+        </div>
+
+        <div class="screenshot-container large">
+            <img src="{{ url_for('static', filename=interaction.screenshot_path) }}"
+                 alt="Current Form Screenshot" class="full-width-screenshot">
+        </div>
+    {% endif %}
+
+
     <a href="{{ url_for('filing_status', filing_id=filing.id) }}" class="btn">View Full Status</a>
     <a href="{{ url_for('dashboard') }}" class="btn">Back to Dashboard</a>
 </div>

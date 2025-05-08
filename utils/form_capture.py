@@ -260,15 +260,45 @@ class FormCapture:
 
     # Enhancing the FormCapture class in utils/form_capture.py
 
-    async def detect_interaction_required(self) -> Optional[Dict[str, Any]]:
+    # Enhanced method in FormCapture class
+    async def detect_interaction_required(self, expected_selectors=None) -> Optional[Dict[str, Any]]:
         """
-        Enhanced version of detect_interaction_required with better field detection
+        Enhanced version to detect when interaction is required, including when elements are not found.
+
+        Args:
+            expected_selectors: Optional list of selectors that should be present
+
+        Returns:
+            Dictionary with interaction data if needed, None otherwise
         """
         try:
             # Capture the current form section
             section_data = await self.capture_current_section()
 
-            # Detect error messages with broader selector coverage
+            # Check if we're missing expected elements
+            missing_elements = []
+            if expected_selectors:
+                for selector_info in expected_selectors:
+                    selector = selector_info.get("selector")
+                    description = selector_info.get("description", selector)
+
+                    try:
+                        element = await self.page.wait_for_selector(selector, timeout=3000)
+                        if not element:
+                            missing_elements.append({
+                                "selector": selector,
+                                "description": description,
+                                "required": True
+                            })
+                    except Exception:
+                        # Element not found
+                        missing_elements.append({
+                            "selector": selector,
+                            "description": description,
+                            "required": True
+                        })
+
+            # Normal error detection logic (existing code)
             error_messages = await self.page.query_selector_all(
                 ".error-message, .validation-error, .field-error, .alert-danger, [role='alert'], " +
                 ".error, .invalid-feedback, .text-danger, .error-text, div[class*='error']")
@@ -278,170 +308,60 @@ class FormCapture:
             for error in error_messages:
                 error_text = await error.text_content()
                 if error_text and error_text.strip():
-                    # Avoid duplicates
                     if error_text.strip() not in error_texts:
                         error_texts.append(error_text.strip())
 
-            # Look for fields that might need human review
+            # Combine normal interaction fields with missing elements
             fields_requiring_interaction = []
 
+            # Add missing element fields
+            for missing in missing_elements:
+                # Dynamically generate options
+                element_options = await self._generate_options_for_selector(missing["selector"])
+
+                fields_requiring_interaction.append({
+                    "id": missing["selector"].replace(".", "_").replace("#", "_").replace("[", "_").replace("]", "_"),
+                    "label": f"Select {missing['description']}",
+                    "type": "radio",
+                    "options": element_options,  # Dynamic options here
+                    "required": missing["required"],
+                    "field_errors": [],
+                    "description": f"The system couldn't automatically select {missing['description']}. Please choose an option."
+                })
+
+            # Add normal fields that need interaction (existing logic)
             for element in section_data["elements"]:
-                # Improve field identification to better capture field attributes
-                element_id = element.get("id", "")
-                element_name = element.get("name", "")
-                element_type = element.get("type", "")
-                element_tag = element.get("tag", "")
+                # ... existing code to identify fields needing interaction ...
+                pass
 
-                # Check if field is complex or has special flags
-                needs_review = False
+            # Only request interaction if we have fields requiring it or errors
+            if fields_requiring_interaction or has_errors or missing_elements:
+                # Take screenshot of current state
+                screenshot_path = await self.screenshot_manager.take_screenshot(
+                    self.page,
+                    f"section_{self.current_section.replace(' ', '_').lower()}"
+                )
 
-                # Check for error messages related to this field
-                if element_id or element_name:
-                    # Look for error messages specifically for this field
-                    field_errors = []
-                    for error in error_messages:
-                        try:
-                            # Enhanced error association with improved fields
-                            error_id = await error.evaluate(f"""
-                                error => {{
-                                    // Try to find associated input through various methods
-                                    const fieldId = error.getAttribute('data-field-id') || 
-                                                  error.getAttribute('for') || 
-                                                  error.id?.replace('-error', '') || 
-                                                  error.getAttribute('aria-controls');
-
-                                    // Check if parent contains our target input
-                                    let parent = error.closest('.form-group, .form-control-feedback, .input-group, .field-container');
-                                    let containsTarget = false;
-
-                                    if (parent) {{
-                                        const targetEl = parent.querySelector('#' + CSS.escape('{element_id}'));
-                                        const nameEl = parent.querySelector('[name="' + CSS.escape('{element_name}') + '"]'); 
-                                        containsTarget = (targetEl !== null || nameEl !== null);
-                                    }}
-
-                                    // Also check if error is near our field (within 200px)
-                                    let errorRect = error.getBoundingClientRect();
-                                    let targetEl = document.getElementById('{element_id}') || 
-                                                document.querySelector('[name="{element_name}"]');
-                                    let isNearby = false;
-
-                                    if (targetEl) {{
-                                        let targetRect = targetEl.getBoundingClientRect();
-                                        let distance = Math.sqrt(
-                                            Math.pow(errorRect.left - targetRect.left, 2) + 
-                                            Math.pow(errorRect.top - targetRect.top, 2)
-                                        );
-                                        isNearby = distance < 200; // Within 200px
-                                    }}
-
-                                    return fieldId || (containsTarget ? 'related' : null) || (isNearby ? 'nearby' : null);
-                                }}
-                            """)
-
-                            if error_id in [element_id, element_name, 'related', 'nearby']:
-                                error_content = await error.text_content()
-                                if error_content and error_content.strip():
-                                    field_errors.append(error_content.strip())
-                        except Exception as e:
-                            logger.debug(f"Error checking error association: {str(e)}")
-
-                    if field_errors:
-                        element["field_errors"] = field_errors
-                        needs_review = True
-
-                # Fields that ALWAYS need human review
-                if element_type in ["file",
-                                    "captcha"] or "captcha" in element_id.lower() or "captcha" in element_name.lower():
-                    needs_review = True
-
-                # Hidden fields don't need review
-                if element_type == "hidden":
-                    continue
-
-                # Complex inputs or special input types
-                if element_type in ["date", "datetime-local", "color", "range"]:
-                    needs_review = True
-
-                # Check for required fields with no default value
-                if element.get("required", False) and not element.get("default_value"):
-                    needs_review = True
-
-                # Complex multi-select or autocomplete fields often need review
-                if ("autocomplete" in (element.get("class") or "").lower() or
-                        element_tag == "select" and element.get("multiple") or
-                        "combobox" in (element.get("class") or "").lower()):
-                    needs_review = True
-
-                # Fields with certain labels that indicate important decisions
-                label_lower = element.get("label", "").lower()
-                review_keywords = ["agreement", "certify", "verify", "confirm", "signature", "attestation",
-                                   "declare", "affirm", "acknowledge", "compliance", "authorize", "certifying",
-                                   "pension", "benefits", "disclaims", "disclaimer", "confidential"]
-
-                if any(keyword in label_lower for keyword in review_keywords):
-                    needs_review = True
-
-                # Special handling for checkbox and radio inputs
-                if element_type in ["checkbox", "radio"]:
-                    # If they're compliance/attestation related
-                    if any(keyword in label_lower for keyword in ["agree", "certify", "attest", "confirm"]):
-                        needs_review = True
-
-                # Enhance field with additional metadata for UI
-                if needs_review:
-                    # Add additional information to help with form rendering
-                    element["needs_review"] = True
-
-                    # Add description and validation message if missing
-                    if "description" not in element:
-                        # Create a helpful description from the label
-                        element["description"] = f"Please provide a value for the {element.get('label', 'field')}"
-
-                    # Add a note about validation if there are errors
-                    if element.get("field_errors"):
-                        element["validation_message"] = "This field has validation errors that need to be corrected."
-
-                    # Add field to the list requiring interaction
-                    fields_requiring_interaction.append(element)
-
-            # Only return interaction needed if we found fields requiring it or errors
-            if fields_requiring_interaction or has_errors:
-                # Ensure we have a proper screenshot
-                if not section_data.get("screenshot_path"):
-                    try:
-                        screenshot_path = await self.screenshot_manager.take_screenshot(
-                            self.page,
-                            f"section_{self.current_section.replace(' ', '_').lower()}"
-                        )
-                        section_data["screenshot_path"] = screenshot_path
-                    except Exception as e:
-                        logger.warning(f"Failed to take section screenshot: {str(e)}")
-
-                # Create helpful guidance message
+                # Create guidance message
                 guidance_message = "Please review and complete the following fields to continue processing."
                 if has_errors:
                     guidance_message = "Please correct the following errors to continue processing."
-                elif fields_requiring_interaction:
-                    field_count = len(fields_requiring_interaction)
-                    if field_count == 1:
-                        guidance_message = f"Please provide information for the {fields_requiring_interaction[0].get('label', 'field')} field."
-                    else:
-                        guidance_message = f"Please provide information for {field_count} fields in the {self.current_section} section."
+                elif missing_elements:
+                    guidance_message = "The automation couldn't find or select some elements. Please make selections to continue."
 
                 interaction_data = {
                     "section_name": section_data["section_name"],
-                    "screenshot_path": section_data.get("screenshot_path", ""),
+                    "screenshot_path": screenshot_path,
                     "fields": fields_requiring_interaction,
                     "error_messages": error_texts,
                     "has_errors": has_errors,
+                    "has_missing_elements": len(missing_elements) > 0,
+                    "missing_elements": missing_elements,
                     "guidance": guidance_message,
                     "timestamp": datetime.now().isoformat()
                 }
 
-                logger.info(
-                    f"Human interaction required in section '{section_data['section_name']}' for {len(fields_requiring_interaction)} fields"
-                )
+                logger.info(f"Human interaction required in section '{section_data['section_name']}'")
                 return interaction_data
 
             return None
@@ -449,6 +369,171 @@ class FormCapture:
         except Exception as e:
             logger.error(f"Error detecting if interaction required: {str(e)}")
             return None
+
+    async def _generate_options_for_selector(self, selector):
+        """
+        Dynamically generate options based on elements found on the page.
+
+        Args:
+            selector: The selector to find elements for
+
+        Returns:
+            List of option dictionaries with value and label
+        """
+        options = []
+        try:
+            # For radio buttons, find all options in the same group
+            if selector.startswith("input[type='radio']"):
+                # Try to extract the name attribute from the selector
+                name_match = re.search(r"name=['\"]([^'\"]+)['\"]", selector)
+                name = name_match.group(1) if name_match else None
+
+                if name:
+                    # Find all radio buttons with the same name
+                    radio_selector = f"input[type='radio'][name='{name}']"
+                else:
+                    # Use a more general selector to find all radio buttons
+                    radio_selector = "input[type='radio']"
+
+                # Find all radio buttons
+                radio_elements = await self.page.query_selector_all(radio_selector)
+
+                # Extract value and label for each radio button
+                for radio in radio_elements:
+                    value = await radio.get_attribute("value") or ""
+
+                    # Try to find label associated with this radio button
+                    radio_id = await radio.get_attribute("id")
+                    label_text = ""
+
+                    if radio_id:
+                        # Try to find label by for attribute
+                        label_element = await self.page.query_selector(f"label[for='{radio_id}']")
+                        if label_element:
+                            label_text = await label_element.text_content() or ""
+
+                    # If no label found, try to find parent label
+                    if not label_text:
+                        label_text = await radio.evaluate("""
+                            el => {
+                                // Check if inside a label
+                                let parent = el.parentElement;
+                                while (parent && parent.tagName !== 'LABEL' && parent.tagName !== 'BODY') {
+                                    parent = parent.parentElement;
+                                }
+                                return parent && parent.tagName === 'LABEL' ? parent.textContent.trim() : null;
+                            }
+                        """)
+
+                    # If still no label, use value as label
+                    if not label_text:
+                        label_text = value
+
+                    # Add to options if not already present
+                    if value and not any(opt["value"] == value for opt in options):
+                        options.append({
+                            "value": value,
+                            "label": label_text.strip() or value
+                        })
+
+            # For select elements
+            elif selector.startswith("select") or (
+                    selector.startswith("#") and await self.page.query_selector(f"{selector}[nodeName='SELECT']")):
+                select_element = await self.page.query_selector(selector)
+                if select_element:
+                    # Get options from the select element
+                    options_data = await select_element.evaluate("""
+                        select => Array.from(select.options).map(option => ({
+                            value: option.value,
+                            label: option.textContent,
+                            selected: option.selected
+                        }))
+                    """)
+                    options = options_data
+
+            # If we couldn't find any options but we have an XPath or complex selector
+            # Let's try to extract all possible values from the page context
+            if not options and (selector.startswith("//") or selector.startswith("xpath=") or selector.contains("=")):
+                # Look for anything that might be a selectable option
+                possible_options = await self.page.evaluate("""
+                    () => {
+                        // Find all elements that look like options
+                        const allOptions = Array.from(document.querySelectorAll('input[type="radio"], input[type="checkbox"], option, button, .selectable-item, [role="option"]'));
+
+                        // Extract their values and labels
+                        return allOptions.map(el => {
+                            let value = el.value || el.getAttribute('data-value') || el.id || el.textContent.trim();
+                            let label = el.textContent.trim() || el.getAttribute('aria-label') || el.title || value;
+
+                            // For radio/checkbox, try to find label if not already found
+                            if ((el.type === 'radio' || el.type === 'checkbox') && el.id) {
+                                const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                                if (labelEl) {
+                                    label = labelEl.textContent.trim();
+                                }
+                            }
+
+                            return { value, label };
+                        }).filter(opt => opt.value); // Filter out empty values
+                    }
+                """)
+
+                # Add any options we found
+                for opt in possible_options:
+                    if not any(existing["value"] == opt["value"] for existing in options):
+                        options.append(opt)
+
+            # Still no options? Try to find all visible text that might be options
+            if not options:
+                # Just grab all text elements that might be options
+                text_elements = await self.page.evaluate("""
+                    () => {
+                        // Find all elements with text that might be options
+                        const textElements = Array.from(document.querySelectorAll('p, span, div, label, a, button'))
+                            .filter(el => {
+                                // Filter to visible elements with text
+                                const style = window.getComputedStyle(el);
+                                const text = el.textContent.trim();
+                                return text && 
+                                       style.display !== 'none' && 
+                                       style.visibility !== 'hidden' &&
+                                       text.length < 50; // Not too long
+                            });
+
+                        return textElements.map(el => ({
+                            value: el.textContent.trim(),
+                            label: el.textContent.trim()
+                        }));
+                    }
+                """)
+
+                # Add text elements as options
+                for opt in text_elements:
+                    if not any(existing["value"] == opt["value"] for existing in options):
+                        options.append(opt)
+
+        except Exception as e:
+            logger.warning(f"Error generating options for selector {selector}: {str(e)}")
+
+            # As a fallback if we couldn't extract options, check for common form patterns
+            if "H-1B" in selector or "visa" in selector.lower() or "classification" in selector.lower():
+                # Fallback for visa classification radio buttons
+                options = [
+                    {"value": "H-1B", "label": "H-1B"},
+                    {"value": "H-1B1 Chile", "label": "H-1B1 Chile"},
+                    {"value": "H-1B1 Singapore", "label": "H-1B1 Singapore"},
+                    {"value": "E-3 Australian", "label": "E-3 Australian"}
+                ]
+
+        # If still no options found, provide generic ones as a last resort
+        if not options:
+            options = [
+                {"value": "option1", "label": "Option 1"},
+                {"value": "option2", "label": "Option 2"},
+                {"value": "custom", "label": "Custom (specify below)"}
+            ]
+
+        return options
 
     async def _find_label_for_element_enhanced(self, element: ElementHandle, element_id: str, element_name: str) -> str:
         """

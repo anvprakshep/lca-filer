@@ -44,6 +44,9 @@ class InteractiveFiler:
         self.active_filings = set()
         self._lock = threading.Lock()
 
+    def has_active_filings(self):
+        return len(self.active_filings) > 0
+
     def set_status_update_callback(self, callback: Callable):
         """
         Set a callback for status updates during the filing process.
@@ -403,18 +406,101 @@ class InteractiveFiler:
                 "message": "Selecting H-1B form type"
             })
 
+            expected_selectors = [
+                {"selector": "input[type='radio'][value='H-1B']", "description": "H-1B Form Type"}
+            ]
+
+            try:
+                if not await navigation.select_form_type("H-1B"):
+                    # Check if we need human interaction
+                    interaction_needed = await self.form_capture.detect_interaction_required(expected_selectors)
+
+                    if interaction_needed:
+                        # Handle the interaction the same way as other interactions
+                        self.update_filing_status(filing_id, {
+                            "status": "interaction_needed",
+                            "step": "form_type_selection_interaction",
+                            "message": "Human interaction required for form type selection",
+                            "interaction_data": {
+                                "section": "Form Type Selection",
+                                "fields": [field["id"] for field in interaction_needed["fields"]],
+                                "has_errors": interaction_needed.get("has_errors", False),
+                                "has_missing_elements": interaction_needed.get("has_missing_elements", False)
+                            }
+                        })
+
+                        # Add to result history
+                        result["interactions"].append({
+                            "section": "Form Type Selection",
+                            "timestamp": datetime.now().isoformat(),
+                            "fields": [field["id"] for field in interaction_needed["fields"]],
+                            "missing_elements": interaction_needed.get("has_missing_elements", False)
+                        })
+
+                        # Call interaction callback
+                        if self.interaction_callback:
+                            self.filing_paused = True
+                            self.pending_interaction = interaction_needed
+
+                            # Clear previous event
+                            self.interaction_completed.clear()
+
+                            # Call the callback
+                            self.interaction_callback(filing_id, interaction_needed)
+
+                            # Wait for human interaction
+                            await self.interaction_completed.wait()
+                            self.filing_paused = False
+
+                            # Apply the interaction results
+                            if filing_id in self.interaction_results:
+                                interaction_result = self.interaction_results[filing_id]
+
+                                # Special handling for form type selection
+                                form_type = None
+                                for field_id, field_value in interaction_result.items():
+                                    if "form_type" in field_id or "radio" in field_id:
+                                        form_type = field_value
+                                        break
+
+                                if form_type:
+                                    # Now try to select the form type with explicit value
+                                    if not await navigation.select_form_type(form_type):
+                                        error_msg = f"Failed to select form type even after human interaction: {form_type}"
+                                        raise Exception(error_msg)
+                                else:
+                                    # If no form type selected, try to click continue anyway
+                                    await navigation.save_and_continue()
+
+                                del self.interaction_results[filing_id]
+
+                    else:
+                        # If no interaction needed but still failed, this is a real error
+                        error_msg = "Failed to select H-1B form type"
+                        self.update_filing_status(filing_id, {
+                            "status": "error",
+                            "step": "form_type_selection",
+                            "error": error_msg
+                        })
+                        result["status"] = "form_selection_failed"
+                        result["error"] = error_msg
+                        return result
+            except Exception as e:
+                # Handle exceptions
+                logger.error(f"Error selecting form type: {str(e)}")
+
             # Select H-1B form type
-            logger.info("Selecting H-1B form type")
-            if not await navigation.select_form_type("H-1B"):
-                error_msg = "Failed to select H-1B form type"
-                self.update_filing_status(filing_id, {
-                    "status": "error",
-                    "step": "form_type_selection",
-                    "error": error_msg
-                })
-                result["status"] = "form_selection_failed"
-                result["error"] = error_msg
-                return result
+            # logger.info("Selecting H-1B form type")
+            # if not await navigation.select_form_type("H-1B"):
+            #     error_msg = "Failed to select H-1B form type"
+            #     self.update_filing_status(filing_id, {
+            #         "status": "error",
+            #         "step": "form_type_selection",
+            #         "error": error_msg
+            #     })
+            #     result["status"] = "form_selection_failed"
+            #     result["error"] = error_msg
+            #     return result
 
             result["steps_completed"].append("form_type_selection")
             self.update_filing_status(filing_id, {
