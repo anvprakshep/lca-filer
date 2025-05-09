@@ -1,7 +1,7 @@
 import asyncio
 import threading
 import time
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, re
 from datetime import datetime
 
 from config.form_structure import FormStructure
@@ -1157,59 +1157,57 @@ class InteractiveFiler:
 
                     # Try different selectors for the results container
                     result_container_selectors = [
-                        ".react-autosuggest__suggestions-container",
-                        ".autocomplete-results",
-                        ".ui-autocomplete",
-                        "ul[role='listbox']",
-                        "//div[contains(@class, 'suggestions-container')]",
-                        "//ul[contains(@class, 'suggestions-list')]"
+                        "#react-autowhatever-1 > ul"
                     ]
 
                     results = []
 
                     # Try to find the results container with different selectors
                     for container_selector in result_container_selectors:
+                        print("container_selector", container_selector)
                         try:
                             # Check if this container exists
                             container = await page.query_selector(container_selector)
+                            print("container", container)
                             if container:
+                                print(f"Found container with selector: {container}")
                                 # Get all result items from this container
                                 item_selectors = [
-                                    "li",
-                                    ".react-autosuggest__suggestion",
-                                    "[role='option']",
-                                    ".autocomplete-result-item"
+                                    "li"
                                 ]
 
                                 for item_selector in item_selectors:
                                     full_selector = f"{container_selector} {item_selector}"
+                                    print(f"full_selector: {full_selector}")
                                     items = await page.query_selector_all(full_selector)
-
+                                    print(f"items: {items}")
                                     if items and len(items) > 0:
                                         for item in items:
+                                            print(f"item: {item}")
                                             item_text = await item.text_content()
+                                            print(f"item_text: {item_text}")
                                             if item_text and item_text.strip():
                                                 # Try to extract code and description
                                                 text = item_text.strip()
 
                                                 # NAICS codes are often formatted as "123456 - Description"
-                                                code_match = re.search(r'(\d{6})\s*-\s*(.*)', text)
-                                                if code_match:
-                                                    code = code_match.group(1)
-                                                    description = code_match.group(2).strip()
-                                                    results.append(
-                                                        {"code": code, "description": description, "text": text})
-                                                else:
-                                                    # If no clear format, just use the text
-                                                    results.append({"code": text, "description": "", "text": text})
-
+                                                # code_match = re.search(r'(\d{6})\s*-\s*(.*)', text)
+                                                # if code_match:
+                                                #     code = code_match.group(1)
+                                                #     description = code_match.group(2).strip()
+                                                #     results.append(
+                                                #         {"code": code, "description": description, "text": text})
+                                                # else:
+                                                #     # If no clear format, just use the text
+                                                results.append({"code": text, "description": "", "text": text})
+                                        print("results", results)
                                         if results:
                                             break
 
                                 if results:
                                     break
-                        except Exception as e:
-                            logger.debug(f"Error getting results from container {container_selector}: {str(e)}")
+                        except Exception as exception:
+                            logger.debug(f"Error getting results from container {container_selector}: {str(exception)}")
 
                     # If no results found through containers, take a screenshot of the current state
                     # to help diagnose what's on the page
