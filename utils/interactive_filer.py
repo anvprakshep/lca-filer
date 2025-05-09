@@ -407,87 +407,87 @@ class InteractiveFiler:
             })
 
             expected_selectors = [
-                {"selector": "input[type='radio'][value='H-1B']", "description": "H-1B Form Type"}
+                {"selector": "#visaType", "description": "H-1B Form Type"}
             ]
 
-            try:
-                if not await navigation.select_form_type("H-1B"):
-                    # Check if we need human interaction
-                    interaction_needed = await self.form_capture.detect_interaction_required(expected_selectors)
-
-                    if interaction_needed:
-                        # Handle the interaction the same way as other interactions
-                        self.update_filing_status(filing_id, {
-                            "status": "interaction_needed",
-                            "step": "form_type_selection_interaction",
-                            "message": "Human interaction required for form type selection",
-                            "interaction_data": {
-                                "section": "Form Type Selection",
-                                "fields": [field["id"] for field in interaction_needed["fields"]],
-                                "has_errors": interaction_needed.get("has_errors", False),
-                                "has_missing_elements": interaction_needed.get("has_missing_elements", False)
-                            }
-                        })
-
-                        # Add to result history
-                        result["interactions"].append({
-                            "section": "Form Type Selection",
-                            "timestamp": datetime.now().isoformat(),
-                            "fields": [field["id"] for field in interaction_needed["fields"]],
-                            "missing_elements": interaction_needed.get("has_missing_elements", False)
-                        })
-
-                        # Call interaction callback
-                        if self.interaction_callback:
-                            self.filing_paused = True
-                            self.pending_interaction = interaction_needed
-
-                            # Clear previous event
-                            self.interaction_completed.clear()
-
-                            # Call the callback
-                            self.interaction_callback(filing_id, interaction_needed)
-
-                            # Wait for human interaction
-                            await self.interaction_completed.wait()
-                            self.filing_paused = False
-
-                            # Apply the interaction results
-                            if filing_id in self.interaction_results:
-                                interaction_result = self.interaction_results[filing_id]
-
-                                # Special handling for form type selection
-                                form_type = None
-                                for field_id, field_value in interaction_result.items():
-                                    if "form_type" in field_id or "radio" in field_id:
-                                        form_type = field_value
-                                        break
-
-                                if form_type:
-                                    # Now try to select the form type with explicit value
-                                    if not await navigation.select_form_type(form_type):
-                                        error_msg = f"Failed to select form type even after human interaction: {form_type}"
-                                        raise Exception(error_msg)
-                                else:
-                                    # If no form type selected, try to click continue anyway
-                                    await navigation.save_and_continue()
-
-                                del self.interaction_results[filing_id]
-
-                    else:
-                        # If no interaction needed but still failed, this is a real error
-                        error_msg = "Failed to select H-1B form type"
-                        self.update_filing_status(filing_id, {
-                            "status": "error",
-                            "step": "form_type_selection",
-                            "error": error_msg
-                        })
-                        result["status"] = "form_selection_failed"
-                        result["error"] = error_msg
-                        return result
-            except Exception as e:
-                # Handle exceptions
-                logger.error(f"Error selecting form type: {str(e)}")
+            # try:
+            #     if not await navigation.select_form_type("H-1B"):
+            #         # Check if we need human interaction
+            #         interaction_needed = await self.form_capture.detect_interaction_required(expected_selectors)
+            #
+            #         if interaction_needed:
+            #             # Handle the interaction the same way as other interactions
+            #             self.update_filing_status(filing_id, {
+            #                 "status": "interaction_needed",
+            #                 "step": "form_type_selection_interaction",
+            #                 "message": "Human interaction required for form type selection",
+            #                 "interaction_data": {
+            #                     "section": "Form Type Selection",
+            #                     "fields": [field["id"] for field in interaction_needed["fields"]],
+            #                     "has_errors": interaction_needed.get("has_errors", False),
+            #                     "has_missing_elements": interaction_needed.get("has_missing_elements", False)
+            #                 }
+            #             })
+            #
+            #             # Add to result history
+            #             result["interactions"].append({
+            #                 "section": "Form Type Selection",
+            #                 "timestamp": datetime.now().isoformat(),
+            #                 "fields": [field["id"] for field in interaction_needed["fields"]],
+            #                 "missing_elements": interaction_needed.get("has_missing_elements", False)
+            #             })
+            #
+            #             # Call interaction callback
+            #             if self.interaction_callback:
+            #                 self.filing_paused = True
+            #                 self.pending_interaction = interaction_needed
+            #
+            #                 # Clear previous event
+            #                 self.interaction_completed.clear()
+            #
+            #                 # Call the callback
+            #                 self.interaction_callback(filing_id, interaction_needed)
+            #
+            #                 # Wait for human interaction
+            #                 await self.interaction_completed.wait()
+            #                 self.filing_paused = False
+            #
+            #                 # Apply the interaction results
+            #                 if filing_id in self.interaction_results:
+            #                     interaction_result = self.interaction_results[filing_id]
+            #
+            #                     # Special handling for form type selection
+            #                     form_type = None
+            #                     for field_id, field_value in interaction_result.items():
+            #                         if "form_type" in field_id or "radio" in field_id:
+            #                             form_type = field_value
+            #                             break
+            #
+            #                     if form_type:
+            #                         # Now try to select the form type with explicit value
+            #                         if not await navigation.select_form_type(form_type):
+            #                             error_msg = f"Failed to select form type even after human interaction: {form_type}"
+            #                             raise Exception(error_msg)
+            #                     else:
+            #                         # If no form type selected, try to click continue anyway
+            #                         await navigation.save_and_continue()
+            #
+            #                     del self.interaction_results[filing_id]
+            #
+            #         else:
+            #             # If no interaction needed but still failed, this is a real error
+            #             error_msg = "Failed to select H-1B form type"
+            #             self.update_filing_status(filing_id, {
+            #                 "status": "error",
+            #                 "step": "form_type_selection",
+            #                 "error": error_msg
+            #             })
+            #             result["status"] = "form_selection_failed"
+            #             result["error"] = error_msg
+            #             return result
+            # except Exception as e:
+            #     # Handle exceptions
+            #     logger.error(f"Error selecting form type: {str(e)}")
 
             # Select H-1B form type
             # logger.info("Selecting H-1B form type")
@@ -509,6 +509,98 @@ class InteractiveFiler:
                 "message": "Successfully selected H-1B form type"
             })
             logger.info("Successfully selected H-1B form type")
+
+            # Skip directly to Section C - Employer Information
+            self.update_filing_status(filing_id, {
+                "status": "processing",
+                "step": "navigating_to_section_c",
+                "message": "Skipping directly to Section C - Employer Information"
+            })
+
+            # This function would navigate to Section C
+            # We need to click "Save and Continue" multiple times to get there
+            for _ in range(1):  # Adjust this number as needed to reach Section C
+                await navigation.save_and_continue()
+                await asyncio.sleep(2)  # Wait for page to load
+
+            # Now we should be at Section C
+            # Capture the current section to verify
+            # section_data = await self.form_capture.capture_current_section()
+            # current_section = section_data["section_name"]
+            current_section = "Section C"
+
+            self.update_filing_status(filing_id, {
+                "status": "processing",
+                "step": "section_c_reached",
+                "current_section": current_section,
+                "message": f"Reached section: {current_section}"
+            })
+
+            self.update_filing_status(filing_id, {
+                "status": "processing",
+                "step": "naics_code_handling",
+                "message": "Handling NAICS code field"
+            })
+
+            try:
+
+                # Process NAICS code field
+                if await self.handle_naics_code_field(page, form_filler, application_data):
+                    self.update_filing_status(filing_id, {
+                        "status": "processing",
+                        "step": "naics_code_complete",
+                        "message": "Successfully handled NAICS code field"
+                    })
+
+                    # Continue with rest of form sections
+                    logger.info("Continuing with form process after handling NAICS code")
+                else:
+                    self.update_filing_status(filing_id, {
+                        "status": "Failed",
+                        "step": "naics_code_handling",
+                        "message": "NAICS code field handling was not successful"
+                    })
+                    logger.warning("NAICS code field handling was not successful")
+            except Exception as e:
+                logger.error(f"Error in section navigation and NAICS handling: {str(e)}")
+                await self.lca_filer.screenshot_manager.take_screenshot(page, "section_navigation_error")
+
+            time.sleep(1000)
+            # # Trigger interaction for NAICS field
+            # interaction_needed = await self.form_capture.detect_interaction_required(naics_selectors)
+            #
+            # if interaction_needed:
+            #     self.update_filing_status(filing_id, {
+            #         "status": "interaction_needed",
+            #         "step": "section_c_naics_interaction",
+            #         "message": "Human interaction required for NAICS Code field",
+            #         "interaction_data": {
+            #             "section": "Employer Information",
+            #             "fields": [field["id"] for field in interaction_needed["fields"]],
+            #             "has_errors": interaction_needed.get("has_errors", False)
+            #         }
+            #     })
+            #
+            #     # Call interaction callback
+            #     if self.interaction_callback:
+            #         self.filing_paused = True
+            #         self.pending_interaction = interaction_needed
+            #
+            #         # Clear previous event
+            #         self.interaction_completed.clear()
+            #
+            #         # Call the callback
+            #         self.interaction_callback(filing_id, interaction_needed)
+            #
+            #         # Wait for human interaction
+            #         await self.interaction_completed.wait()
+            #         self.filing_paused = False
+            #
+            #         # Apply the interaction results
+            #         if filing_id in self.interaction_results:
+            #             interaction_result = self.interaction_results[filing_id]
+            #             await self._apply_interaction_results(page, form_filler, interaction_result)
+            #             del self.interaction_results[filing_id]
 
             # Get AI decisions for the entire form
             self.update_filing_status(filing_id, {
@@ -841,3 +933,266 @@ class InteractiveFiler:
         except Exception as e:
             logger.error(f"Error checking for validation errors: {str(e)}")
             return None
+
+    async def navigate_to_section_c(self, page, navigation):
+        """
+        Navigate to Section C (Employer Information) from Section A.
+
+        Args:
+            page: Playwright page
+            navigation: Navigation instance
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info("Attempting to navigate to Section C (Employer Information)")
+
+            # First, check what section we're currently on
+            current_section_data = await self.form_capture.capture_current_section()
+            current_section = current_section_data["section_name"]
+            logger.info(f"Currently on section: {current_section}")
+
+            # If already at Section C, return success
+            if "employer information" in current_section.lower() or "section c" in current_section.lower():
+                logger.info("Already at Section C (Employer Information)")
+                return True
+
+            # Method 1: Try clicking "Save and Continue" until we reach Section C
+            max_attempts = 5  # Adjust based on your form structure
+            for attempt in range(max_attempts):
+                logger.info(f"Clicking continue to navigate to next section (attempt {attempt + 1}/{max_attempts})")
+
+                # Take screenshot before navigation
+                await self.lca_filer.screenshot_manager.take_screenshot(
+                    page, f"before_navigation_attempt_{attempt + 1}")
+
+                # Click continue button
+                await navigation.save_and_continue()
+
+                # Wait for page to load
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception as e:
+                    logger.warning(f"Timeout waiting for page load: {str(e)}")
+
+                # Additional wait to ensure forms are fully loaded
+                await page.wait_for_timeout(2000)
+
+                # Take screenshot after navigation
+                await self.lca_filer.screenshot_manager.take_screenshot(
+                    page, f"after_navigation_attempt_{attempt + 1}")
+
+                # Check current section
+                section_data = await self.form_capture.capture_current_section()
+                current_section = section_data["section_name"]
+                logger.info(f"Now on section: {current_section}")
+
+                # Check if we've reached Section C
+                if "employer information" in current_section.lower() or "section c" in current_section.lower():
+                    logger.info(f"Reached Section C (Employer Information) after {attempt + 1} attempts")
+                    return True
+
+                # If we're on the final attempt and haven't reached Section C,
+                # take one more screenshot to help with debugging
+                if attempt == max_attempts - 1:
+                    await self.lca_filer.screenshot_manager.take_screenshot(
+                        page, "failed_to_reach_section_c")
+
+            logger.warning(f"Could not reach Section C after {max_attempts} attempts")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error navigating to Section C: {str(e)}")
+            # Take screenshot of the error state
+            await self.lca_filer.screenshot_manager.take_screenshot(page, "navigation_to_section_c_error")
+            return False
+
+    async def handle_naics_code_field(self, page, form_filler, application_data=None):
+        """
+        Special handler for the NAICS Code field.
+
+        Args:
+            page: Playwright page
+            form_filler: Form filler instance
+            application_data: Optional application data
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info("Handling NAICS Code field specifically")
+
+            # Take screenshot before handling
+            await self.lca_filer.screenshot_manager.take_screenshot(page, "before_naics_code_handling")
+            time.sleep(10)
+            # Find the NAICS code field using various selectors
+            naics_selectors = [
+                {"selector": "#formContainer > form > div:nth-child(1) > fieldset:nth-child(2) > div > div:nth-child(6) > div > div > div.react-autosuggest__container > div.input-container > input", "description": "NAICS Code"},
+                {"selector": "#formContainer > form > div:nth-child(1) > fieldset:nth-child(2) > div > div:nth-child(6) > div > div > div.react-autosuggest__container > div.input-container > input", "description": "NAICS Code"},
+                {"selector": "/html/body/div[9]/div/div/div[2]/div[2]/form/div[1]/fieldset[1]/div/div[6]/div/div/div[2]/div[1]/input", "description": "NAICS Code"}
+            ]
+            naics_field = None
+            for selector in naics_selectors:
+                try:
+                    naics_field = await page.query_selector(selector["selector"])
+                    print("selector", selector["selector"])
+                    print("naics_field", naics_field)
+                    if naics_field:
+                        logger.info(f"Found NAICS code field with selector: {selector}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Error finding NAICS code with selector {selector}: {str(e)}")
+                    continue
+
+            if not naics_field:
+                logger.error("Could not find NAICS code field")
+                return False
+
+            # Get field ID and name for interaction
+            field_id = await naics_field.get_attribute("id") or "naics_code"
+            field_name = await naics_field.get_attribute("name") or "naics_code"
+
+            # Get NAICS code from application data if available
+            naics_code = None
+            if application_data and "employer" in application_data:
+                naics_code = application_data["employer"].get("naics")
+
+            # Prepare field data for interaction
+            field_data = {
+                "section_name": "Employer Information",
+                "screenshot_path": await self.lca_filer.screenshot_manager.take_screenshot(page, "naics_code_field"),
+                "fields": [{
+                    "id": field_id,
+                    "name": field_name,
+                    "type": "autocomplete",
+                    "label": "NAICS Code",
+                    "placeholder": await naics_field.get_attribute("placeholder") or "Enter NAICS Code",
+                    "default_value": naics_code or "",
+                    "required": True,
+                    "description": "Enter NAICS code or industry keywords to search. The system will show matching options as you type.",
+                    "example_searches": ["541511", "Software", "Engineering", "Computer"],
+                    "sample_values": [
+                        {"code": "541511", "description": "Custom Computer Programming Services"},
+                        {"code": "541512", "description": "Computer Systems Design Services"},
+                        {"code": "541330", "description": "Engineering Services"},
+                        {"code": "541712", "description": "Research and Development in Physical Sciences"}
+                    ],
+                    "is_autocomplete": True,
+                    "field_errors": []
+                }],
+                "error_messages": [],
+                "has_errors": False,
+                "guidance": "Please enter a NAICS code for the employer. You can search by code or keywords.",
+                "timestamp": datetime.now().isoformat()
+            }
+
+            # Get current filing ID
+            filing_id = None
+            for fid in self.active_filings:
+                filing_id = fid
+                break
+
+            if not filing_id:
+                logger.warning("No active filing ID found")
+                filing_id = "unknown"
+
+            # Request interaction
+            if self.interaction_callback:
+                self.filing_paused = True
+                self.pending_interaction = field_data
+
+                # Clear previous event
+                self.interaction_completed.clear()
+
+                # Call interaction callback
+                self.interaction_callback(filing_id, field_data)
+
+                # Wait for interaction
+                logger.info("Waiting for human input on NAICS code field")
+                await self.interaction_completed.wait()
+                self.filing_paused = False
+
+                # Apply the interaction result
+                if filing_id in self.interaction_results:
+                    interaction_result = self.interaction_results[filing_id]
+
+                    # Find NAICS value in results
+                    naics_value = None
+                    for key, value in interaction_result.items():
+                        if field_id in key or 'naics' in key.lower():
+                            naics_value = value
+                            break
+
+                    if not naics_value and f"{field_id}_selected" in interaction_result:
+                        naics_value = interaction_result[f"{field_id}_selected"]
+
+                    if naics_value:
+                        logger.info(f"Applying NAICS code: {naics_value}")
+
+                        # Fill the NAICS code field
+                        await naics_field.click()
+                        await naics_field.fill("")
+                        await naics_field.fill(naics_value)
+
+                        # Wait for autocomplete results to appear
+                        await page.wait_for_timeout(1000)
+
+                        # Try to click on matching result if available
+                        try:
+                            # Try various selectors for result items
+                            result_selectors = [
+                                ".autocomplete-results .result-item",
+                                ".ui-autocomplete .ui-menu-item",
+                                "[role='listbox'] [role='option']",
+                                ".dropdown-menu .dropdown-item",
+                                "li:has-text('" + naics_value + "')"
+                            ]
+
+                            result_found = False
+                            for selector in result_selectors:
+                                results = await page.query_selector_all(selector)
+                                if results and len(results) > 0:
+                                    # Try to find exact match
+                                    for result in results:
+                                        result_text = await result.text_content()
+                                        if naics_value in result_text:
+                                            await result.click()
+                                            logger.info(f"Clicked matching result: {result_text}")
+                                            result_found = True
+                                            break
+
+                                    # If no exact match found, click first result
+                                    if not result_found and results:
+                                        await results[0].click()
+                                        logger.info("Clicked first result")
+                                        result_found = True
+
+                                    if result_found:
+                                        break
+                        except Exception as e:
+                            logger.warning(f"Error clicking autocomplete result: {str(e)}")
+
+                        # Press Tab to confirm and move to next field
+                        await naics_field.press("Tab")
+
+                        # Take screenshot after handling
+                        await self.lca_filer.screenshot_manager.take_screenshot(page, "after_naics_code_handling")
+
+                        # Remove the interaction result
+                        del self.interaction_results[filing_id]
+                        return True
+                    else:
+                        logger.warning("No NAICS code value found in interaction results")
+                else:
+                    logger.warning(f"No interaction results found for filing {filing_id}")
+
+                return False
+            else:
+                logger.error("No interaction callback provided")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error handling NAICS code field: {str(e)}")
+            await self.lca_filer.screenshot_manager.take_screenshot(page, "naics_code_error")
+            return False

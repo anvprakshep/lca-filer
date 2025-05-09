@@ -35,6 +35,78 @@
 
     <form method="POST" action="{{ url_for('human_interaction', filing_id=filing.id) }}" id="interaction-form">
         {% for field in interaction.fields %}
+        {% if field.type == "autocomplete" or field.is_autocomplete %}
+        <div class="form-group field-container autocomplete-field-container">
+            <h3 class="field-header">
+                {{ field.label }}
+                {% if field.required %}
+                <span class="required-badge">Required</span>
+                {% endif %}
+            </h3>
+
+            {% if field.description %}
+            <p class="field-description">{{ field.description }}</p>
+            {% endif %}
+
+            {% if field.field_errors %}
+            <div class="field-errors">
+                {% for error in field.field_errors %}
+                <p class="field-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <input type="text"
+                id="{{ field.id }}"
+                name="{{ field.id }}"
+                value="{{ field.default_value|default('') }}"
+                placeholder="{{ field.placeholder|default('Type to search...') }}"
+                class="form-control autocomplete-input {% if field.field_errors %}is-invalid{% endif %}"
+                {% if field.required %}required{% endif %}
+                {% if field.pattern %}pattern="{{ field.pattern }}"{% endif %}
+                data-min-search-chars="{{ field.min_search_chars|default(3) }}"
+                autocomplete="off">
+
+            <div id="{{ field.id }}_results" class="autocomplete-results hidden"></div>
+
+            {% if field.example_searches %}
+            <div class="example-searches">
+                <p>Example searches:
+                {% for example in field.example_searches %}
+                <a href="#" class="example-search-link" data-field-id="{{ field.id }}">{{ example }}</a>{% if not loop.last %} | {% endif %}
+                {% endfor %}
+                </p>
+            </div>
+            {% endif %}
+
+            {% if field.sample_values %}
+            <div class="sample-values">
+                <p>Common NAICS codes:</p>
+                <ul class="sample-value-list">
+                    {% for value in field.sample_values %}
+                    <li>
+                        <a href="#" class="sample-value-link" data-field-id="{{ field.id }}"
+                        data-value="{{ value.code }}">{{ value.code }} - {{ value.description }}</a>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            <div class="selected-value-container {% if not field.default_value %}hidden{% endif %}">
+                <p>Selected value: <strong id="{{ field.id }}_selected">{{ field.default_value }}</strong></p>
+                <input type="hidden" name="{{ field.id }}_selected" value="{{ field.default_value }}">
+            </div>
+
+            {% if field.validation_message %}
+            <p class="validation-message">{{ field.validation_message }}</p>
+            {% endif %}
+
+            {% if field.note %}
+            <p class="field-note"><em>Note: {{ field.note }}</em></p>
+            {% endif %}
+        </div>
+        {% else %}
         <div class="form-group field-container">
             <h3 class="field-header">
                 {{ field.label }}
@@ -57,24 +129,24 @@
             </div>
             {% endif %}
 
-            {% if field.type == "text" or field.type == "email" or field.type == "number" or field.type == "tel" %}
+            {% if field.type == "text" or field.type == "email" or field.type == "number" or field.type == "tel" or field.type == "url" or field.type == "date" %}
                 <input type="{{ field.type }}" id="{{ field.id }}" name="{{ field.id }}"
-                       value="{{ field.default_value|default('') }}"
-                       placeholder="{{ field.placeholder|default('') }}"
-                       {% if field.required %}required{% endif %}
-                       {% if field.pattern %}pattern="{{ field.pattern }}"{% endif %}
-                       {% if field.min %}min="{{ field.min }}"{% endif %}
-                       {% if field.max %}max="{{ field.max }}"{% endif %}
-                       {% if field.step %}step="{{ field.step }}"{% endif %}
-                       class="form-control {% if field.field_errors %}is-invalid{% endif %}">
+                    value="{{ field.default_value|default('') }}"
+                    placeholder="{{ field.placeholder|default('') }}"
+                    {% if field.required %}required{% endif %}
+                    {% if field.pattern %}pattern="{{ field.pattern }}"{% endif %}
+                    {% if field.min %}min="{{ field.min }}"{% endif %}
+                    {% if field.max %}max="{{ field.max }}"{% endif %}
+                    {% if field.step %}step="{{ field.step }}"{% endif %}
+                    class="form-control {% if field.field_errors %}is-invalid{% endif %}">
 
             {% elif field.type == "textarea" %}
                 <textarea id="{{ field.id }}" name="{{ field.id }}"
-                          placeholder="{{ field.placeholder|default('') }}"
-                          {% if field.required %}required{% endif %}
-                          class="form-control {% if field.field_errors %}is-invalid{% endif %}">{{ field.default_value|default('') }}</textarea>
+                        placeholder="{{ field.placeholder|default('') }}"
+                        {% if field.required %}required{% endif %}
+                        class="form-control {% if field.field_errors %}is-invalid{% endif %}">{{ field.default_value|default('') }}</textarea>
 
-            {% elif field.type == "select" %}
+            {% elif field.type == "dropdown" or field.type == "select" %}
                 {% if field.options and field.options|length > 10 %}
                 <div class="select-search-container">
                     <input type="text" class="select-search" placeholder="Search options...">
@@ -98,8 +170,8 @@
                     <div class="radio-option">
                         <label>
                             <input type="radio" name="{{ field.id }}" value="{{ option.value }}"
-                                  {% if option.value == field.default_value or option.selected %}checked{% endif %}
-                                  {% if field.required %}required{% endif %}>
+                                {% if option.value == field.default_value or option.selected %}checked{% endif %}
+                                {% if field.required %}required{% endif %}>
                             {{ option.label }}
                         </label>
                     </div>
@@ -110,40 +182,32 @@
                 <div class="checkbox-option">
                     <label>
                         <input type="checkbox" id="{{ field.id }}" name="{{ field.id }}" value="true"
-                              {% if field.default_value or field.checked %}checked{% endif %}>
+                            {% if field.default_value or field.checked %}checked{% endif %}>
                         {{ field.label }}
                     </label>
                 </div>
 
-            {% elif field.type == "date" %}
-                <input type="date" id="{{ field.id }}" name="{{ field.id }}"
-                       value="{{ field.default_value|default('') }}"
-                       {% if field.required %}required{% endif %}
-                       {% if field.min %}min="{{ field.min }}"{% endif %}
-                       {% if field.max %}max="{{ field.max }}"{% endif %}
-                       class="form-control {% if field.field_errors %}is-invalid{% endif %}">
-
             {% elif field.type == "file" %}
                 <input type="file" id="{{ field.id }}" name="{{ field.id }}"
-                       {% if field.required %}required{% endif %}
-                       {% if field.accept %}accept="{{ field.accept }}"{% endif %}
-                       class="form-control-file {% if field.field_errors %}is-invalid{% endif %}">
+                    {% if field.required %}required{% endif %}
+                    {% if field.accept %}accept="{{ field.accept }}"{% endif %}
+                    class="form-control-file {% if field.field_errors %}is-invalid{% endif %}">
                 <p class="file-note">Note: This file will be uploaded to the FLAG portal during the automation process.</p>
 
             {% elif field.type == "captcha" %}
                 <div class="captcha-field">
                     <p>CAPTCHA required. Please enter the characters shown in the image above.</p>
                     <input type="text" id="{{ field.id }}" name="{{ field.id }}" required
-                           class="form-control {% if field.field_errors %}is-invalid{% endif %}">
+                        class="form-control {% if field.field_errors %}is-invalid{% endif %}">
                 </div>
 
             {% else %}
                 <!-- Unknown field type - use text input as fallback -->
                 <input type="text" id="{{ field.id }}" name="{{ field.id }}"
-                       value="{{ field.default_value|default('') }}"
-                       placeholder="{{ field.placeholder|default('') }}"
-                       {% if field.required %}required{% endif %}
-                       class="form-control {% if field.field_errors %}is-invalid{% endif %}">
+                    value="{{ field.default_value|default('') }}"
+                    placeholder="{{ field.placeholder|default('') }}"
+                    {% if field.required %}required{% endif %}
+                    class="form-control {% if field.field_errors %}is-invalid{% endif %}">
                 <p class="field-note">Note: This field is of type '{{ field.type }}' which is not directly supported. Please enter the appropriate value.</p>
             {% endif %}
 
@@ -155,6 +219,7 @@
             <p class="field-note"><em>Note: {{ field.note }}</em></p>
             {% endif %}
         </div>
+        {% endif %}
         {% endfor %}
 
         <div class="form-group submit-container">
@@ -199,6 +264,12 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    // Setup autocomplete fields
+    setupAutocompleteFields();
+
+    // Setup example search links
+    setupExampleSearchLinks();
+
     // Set up search filtering for select elements with many options
     const selectSearchInputs = document.querySelectorAll('.select-search');
     selectSearchInputs.forEach(searchInput => {
@@ -322,6 +393,193 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+
+    // Autocomplete functionality
+    function setupAutocompleteFields() {
+        const autocompleteInputs = document.querySelectorAll('.autocomplete-input');
+
+        autocompleteInputs.forEach(function(input) {
+            const fieldId = input.id;
+            const resultsContainer = document.getElementById(fieldId + '_results');
+            const minChars = parseInt(input.getAttribute('data-min-search-chars') || '3');
+
+            if (!resultsContainer) return;
+
+            // Input event handling with debounce
+            let debounceTimeout;
+            input.addEventListener('input', function() {
+                const searchTerm = this.value.trim();
+
+                // Clear previous timeout
+                if (debounceTimeout) {
+                    clearTimeout(debounceTimeout);
+                }
+
+                // Hide results if search term is too short
+                if (searchTerm.length < minChars) {
+                    resultsContainer.classList.add('hidden');
+                    return;
+                }
+
+                // Debounce the search (wait 300ms before showing results)
+                debounceTimeout = setTimeout(() => {
+                    generateSearchResults(searchTerm, fieldId, resultsContainer);
+                }, 300);
+            });
+
+            // Outside click handler to hide results
+            document.addEventListener('click', function(e) {
+                if (!input.contains(e.target) && !resultsContainer.contains(e.target)) {
+                    resultsContainer.classList.add('hidden');
+                }
+            });
+        });
+    }
+
+    function setupExampleSearchLinks() {
+        // Handle example search links
+        document.querySelectorAll('.example-search-link, .sample-value-link').forEach(function(link) {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const fieldId = this.getAttribute('data-field-id');
+                const searchTerm = this.getAttribute('data-value') || this.textContent;
+
+                // Set the input value
+                const input = document.getElementById(fieldId);
+                if (input) {
+                    input.value = searchTerm;
+
+                    // Trigger search results
+                    const resultsContainer = document.getElementById(fieldId + '_results');
+                    if (resultsContainer) {
+                        generateSearchResults(searchTerm, fieldId, resultsContainer);
+                    }
+
+                    // If this is a direct selection (has data-value), update the selected value
+                    if (this.getAttribute('data-value')) {
+                        updateSelectedValue(fieldId, this.getAttribute('data-value'), this.textContent);
+                    }
+                }
+            });
+        });
+    }
+
+    function generateSearchResults(searchTerm, fieldId, resultsContainer) {
+        // Clear previous results
+        resultsContainer.innerHTML = '';
+
+        // Generate sample results based on field type
+        let results = [];
+
+        // Special handling for NAICS codes
+        if (fieldId.toLowerCase().includes('naics')) {
+            results = generateNaicsResults(searchTerm);
+        } else {
+            // Generic autocomplete results
+            results = [
+                { value: searchTerm + '-1', label: searchTerm + ' Option 1' },
+                { value: searchTerm + '-2', label: searchTerm + ' Option 2' },
+                { value: searchTerm + '-3', label: searchTerm + ' Option 3' }
+            ];
+        }
+
+        // Display no results message if empty
+        if (results.length === 0) {
+            const noResults = document.createElement('div');
+            noResults.className = 'no-results';
+            noResults.textContent = 'No matching results found';
+            resultsContainer.appendChild(noResults);
+            resultsContainer.classList.remove('hidden');
+            return;
+        }
+
+        // Create result items
+        results.forEach(function(result) {
+            const resultItem = document.createElement('div');
+            resultItem.className = 'result-item';
+            resultItem.textContent = result.label;
+            resultItem.setAttribute('data-value', result.value);
+
+            // Click handler to select this item
+            resultItem.addEventListener('click', function() {
+                // Update the input value
+                const input = document.getElementById(fieldId);
+                if (input) {
+                    input.value = this.getAttribute('data-value');
+                }
+
+                // Update selected value display
+                updateSelectedValue(fieldId, this.getAttribute('data-value'), this.textContent);
+
+                // Hide results
+                resultsContainer.classList.add('hidden');
+            });
+
+            resultsContainer.appendChild(resultItem);
+        });
+
+        // Show results
+        resultsContainer.classList.remove('hidden');
+    }
+
+    function updateSelectedValue(fieldId, value, displayText) {
+        // Update the selected value display
+        const selectedDisplay = document.getElementById(fieldId + '_selected');
+        const selectedInput = document.querySelector('input[name="' + fieldId + '_selected"]');
+        const selectedContainer = document.querySelector('#' + fieldId).closest('.autocomplete-field-container').querySelector('.selected-value-container');
+
+        if (selectedDisplay) {
+            selectedDisplay.textContent = displayText || value;
+        }
+
+        if (selectedInput) {
+            selectedInput.value = value;
+        }
+
+        if (selectedContainer) {
+            selectedContainer.classList.remove('hidden');
+        }
+    }
+
+    function generateNaicsResults(searchTerm) {
+        // Common NAICS codes that might match search terms
+        const commonNaics = [
+            { code: '541511', description: 'Custom Computer Programming Services' },
+            { code: '541512', description: 'Computer Systems Design Services' },
+            { code: '541330', description: 'Engineering Services' },
+            { code: '541611', description: 'Administrative Management Consulting Services' },
+            { code: '541711', description: 'Research and Development in Biotechnology' },
+            { code: '541712', description: 'Research and Development in Physical Sciences' },
+            { code: '541310', description: 'Architectural Services' },
+            { code: '541110', description: 'Offices of Lawyers' },
+            { code: '621111', description: 'Offices of Physicians' },
+            { code: '334220', description: 'Communications Equipment Manufacturing' },
+            { code: '334111', description: 'Electronic Computer Manufacturing' },
+            { code: '517110', description: 'Telecommunications' },
+            { code: '339113', description: 'Surgical and Medical Instrument Manufacturing' },
+            { code: '611310', description: 'Colleges, Universities, and Professional Schools' },
+            { code: '541990', description: 'All Other Professional, Scientific, and Technical Services' },
+            { code: '621399', description: 'Offices of All Other Miscellaneous Health Practitioners' },
+            { code: '236220', description: 'Commercial and Institutional Building Construction' },
+            { code: '622110', description: 'General Medical and Surgical Hospitals' },
+            { code: '541380', description: 'Testing Laboratories' },
+            { code: '541618', description: 'Other Management Consulting Services' }
+        ];
+
+        // Filter based on search term (case insensitive)
+        const searchTermLower = searchTerm.toLowerCase();
+
+        const matchingNaics = commonNaics.filter(naics =>
+            naics.code.includes(searchTerm) ||
+            naics.description.toLowerCase().includes(searchTermLower)
+        );
+
+        // Format for display
+        return matchingNaics.map(naics => ({
+            value: naics.code,
+            label: `${naics.code} - ${naics.description}`
+        }));
+    }
 });
 </script>
 
@@ -332,7 +590,7 @@ document.addEventListener('DOMContentLoaded', function() {
     padding: 15px;
     border: 1px solid #e9ecef;
     border-radius: 5px;
-    background-color: #f8f9fa;
+    background-color: #f8f8f8;
 }
 
 .field-header {
@@ -488,6 +746,88 @@ document.addEventListener('DOMContentLoaded', function() {
     border: 1px solid #ddd;
     border-radius: 4px;
     cursor: pointer;
+}
+
+/* Autocomplete styles */
+.autocomplete-field-container {
+    position: relative;
+    margin-bottom: 20px;
+}
+
+.autocomplete-input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.autocomplete-results {
+    position: absolute;
+    width: 100%;
+    max-height: 300px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    z-index: 100;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.autocomplete-results.hidden {
+    display: none;
+}
+
+.result-item {
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+}
+
+.result-item:hover {
+    background-color: #f5f5f5;
+}
+
+.no-results {
+    padding: 10px;
+    font-style: italic;
+    color: #666;
+}
+
+.example-searches {
+    margin-top: 5px;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.example-search-link, .sample-value-link {
+    color: #0066cc;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.sample-values {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f8f8;
+    border-radius: 4px;
+}
+
+.sample-value-list {
+    margin: 5px 0 0 0;
+    padding-left: 20px;
+}
+
+.selected-value-container {
+    margin-top: 10px;
+    padding: 8px;
+    background-color: #f8f8f8;
+    border-radius: 4px;
+    border-left: 3px solid #0066cc;
+}
+
+.selected-value-container.hidden {
+    display: none;
 }
 </style>
 {% endblock %}

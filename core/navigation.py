@@ -538,8 +538,8 @@ class Navigation:
         """
         try:
             # Click save button if available
-            if await self.browser_manager.is_element_visible(self.page, self.selectors["save_button"]):
-                await self.browser_manager.click_element(self.page, self.selectors["save_button"])
+            if await self.browser_manager.is_element_visible(self.page, self.selectors["continue_button"]):
+                await self.browser_manager.click_element(self.page, self.selectors["continue_button"])
 
                 # Wait for save to complete
                 await self.page.wait_for_load_state("networkidle")

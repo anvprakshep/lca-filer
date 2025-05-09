@@ -53,7 +53,7 @@ class BrowserManager:
 
                 # Launch browser
                 self.browser = await playwright.chromium.launch(
-                    headless=self.config.get("headless", True)
+                    headless=False
                 )
 
                 # Create context with custom settings

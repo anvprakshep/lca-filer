@@ -313,3 +313,85 @@
     color: #6c757d;
     font-size: 12px;
 }
+
+/* Add these styles to your existing CSS */
+.autocomplete-field-container {
+    position: relative;
+    margin-bottom: 20px;
+}
+
+.autocomplete-input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.autocomplete-results {
+    position: absolute;
+    width: 100%;
+    max-height: 300px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid #ddd;
+    border-top: none;
+    border-radius: 0 0 4px 4px;
+    z-index: 100;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.autocomplete-results.hidden {
+    display: none;
+}
+
+.result-item {
+    padding: 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #eee;
+}
+
+.result-item:hover {
+    background-color: #f5f5f5;
+}
+
+.no-results {
+    padding: 10px;
+    font-style: italic;
+    color: #666;
+}
+
+.example-searches {
+    margin-top: 5px;
+    font-size: 0.9em;
+    color: #666;
+}
+
+.example-search-link, .sample-value-link {
+    color: #0066cc;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.sample-values {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f8f8;
+    border-radius: 4px;
+}
+
+.sample-value-list {
+    margin: 5px 0 0 0;
+    padding-left: 20px;
+}
+
+.selected-value-container {
+    margin-top: 10px;
+    padding: 8px;
+    background-color: #f8f8f8;
+    border-radius: 4px;
+    border-left: 3px solid #0066cc;
+}
+
+.selected-value-container.hidden {
+    display: none;
+}

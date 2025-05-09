@@ -260,10 +260,10 @@ class FormCapture:
 
     # Enhancing the FormCapture class in utils/form_capture.py
 
-    # Enhanced method in FormCapture class
     async def detect_interaction_required(self, expected_selectors=None) -> Optional[Dict[str, Any]]:
         """
         Enhanced version to detect when interaction is required, including when elements are not found.
+        Adds special handling for NAICS code fields without removing original functionality.
 
         Args:
             expected_selectors: Optional list of selectors that should be present
@@ -311,28 +311,88 @@ class FormCapture:
                     if error_text.strip() not in error_texts:
                         error_texts.append(error_text.strip())
 
-            # Combine normal interaction fields with missing elements
+            # Enhance fields requiring interaction - check specifically for NAICS code field
             fields_requiring_interaction = []
+
+            # First, check if there's a NAICS code field
+            naics_field = None
+            naics_selectors = [
+                "#naics_code",
+                "[name='naics_code']",
+                "input[id*='naics'][id*='code']",
+                "input[name*='naics'][name*='code']"
+            ]
+
+            for selector in naics_selectors:
+                try:
+                    naics_field = await self.page.query_selector(selector)
+                    if naics_field:
+                        break
+                except:
+                    continue
+
+            # If we found a NAICS field, add it to fields requiring interaction
+            if naics_field:
+                # Get field properties
+                field_id = await naics_field.get_attribute("id") or "naics_code"
+                field_name = await naics_field.get_attribute("name") or "naics_code"
+                placeholder = await naics_field.get_attribute("placeholder") or "Enter NAICS Code"
+
+                fields_requiring_interaction.append({
+                    "id": field_id,
+                    "name": field_name,
+                    "type": "autocomplete",
+                    "label": "NAICS Code",
+                    "placeholder": placeholder,
+                    "default_value": await naics_field.input_value() or "",
+                    "required": True,
+                    "is_autocomplete": True,
+                    "description": "Enter a NAICS code or keywords to search. The system will show matching options as you type.",
+                    "example_searches": ["541511", "Software", "Engineering", "Computer"],
+                    "sample_values": [
+                        {"code": "541511", "description": "Custom Computer Programming Services"},
+                        {"code": "541512", "description": "Computer Systems Design Services"},
+                        {"code": "541330", "description": "Engineering Services"},
+                        {"code": "541712", "description": "Research and Development in Physical Sciences"}
+                    ],
+                    "min_search_chars": 2,
+                    "field_errors": []
+                })
 
             # Add missing element fields
             for missing in missing_elements:
-                # Dynamically generate options
-                element_options = await self._generate_options_for_selector(missing["selector"])
-
                 fields_requiring_interaction.append({
                     "id": missing["selector"].replace(".", "_").replace("#", "_").replace("[", "_").replace("]", "_"),
                     "label": f"Select {missing['description']}",
-                    "type": "radio",
-                    "options": element_options,  # Dynamic options here
+                    "type": "text",  # Default type
                     "required": missing["required"],
                     "field_errors": [],
-                    "description": f"The system couldn't automatically select {missing['description']}. Please choose an option."
+                    "description": f"The system couldn't automatically find {missing['description']}. Please enter it manually."
                 })
 
-            # Add normal fields that need interaction (existing logic)
+            # Process all elements from section data
             for element in section_data["elements"]:
-                # ... existing code to identify fields needing interaction ...
-                pass
+                # Check if this is a field we want to make interactive
+                make_interactive = False
+
+                # Always include fields with errors
+                if has_errors and element.get("aria_invalid") == True:
+                    make_interactive = True
+
+                # Include NAICS fields (already handled above, so skip)
+                if 'naics' in element.get("id", "").lower() or 'naics' in element.get("name", "").lower():
+                    continue
+
+                # Include any field that's a complex type
+                if element.get("type") in ["autocomplete", "combobox"]:
+                    make_interactive = True
+
+                # Add the field if needed
+                if make_interactive:
+                    field_copy = element.copy()
+                    if "field_errors" not in field_copy:
+                        field_copy["field_errors"] = []
+                    fields_requiring_interaction.append(field_copy)
 
             # Only request interaction if we have fields requiring it or errors
             if fields_requiring_interaction or has_errors or missing_elements:
@@ -356,7 +416,6 @@ class FormCapture:
                     "error_messages": error_texts,
                     "has_errors": has_errors,
                     "has_missing_elements": len(missing_elements) > 0,
-                    "missing_elements": missing_elements,
                     "guidance": guidance_message,
                     "timestamp": datetime.now().isoformat()
                 }
@@ -797,10 +856,10 @@ class FormCapture:
             logger.error(f"Error capturing radio options: {str(e)}")
             return []
 
-
     async def capture_element(self, element: ElementHandle) -> Optional[Dict[str, Any]]:
         """
-        Enhanced version of capture_element with better field detection and attributes.
+        Enhanced version of capture_element with support for autocomplete fields.
+        Preserves all existing functionality while adding detection for NAICS fields.
 
         Args:
             element: Playwright element handle
@@ -832,8 +891,14 @@ class FormCapture:
             if tag_name == "div" and element_role == "combobox":
                 element_type = "autocomplete"
 
+            # NEW: Enhanced detection for NAICS code fields
+            is_naics_field = False
+            if (element_id and 'naics' in element_id.lower()) or (element_name and 'naics' in element_name.lower()):
+                is_naics_field = True
+                element_type = "autocomplete"  # Override type for NAICS fields
+
             # Find the label with improved methods
-            label_text = await self._find_label_for_element_enhanced(element, element_id, element_name)
+            label_text = await self._find_label_for_element(element, element_id, element_name)
 
             # Get placeholder and default value
             placeholder = await element.get_attribute("placeholder") or ""
@@ -942,6 +1007,20 @@ class FormCapture:
                 "aria_invalid": aria_invalid == "true"
             }
 
+            # NEW: Add special properties for NAICS code fields
+            if is_naics_field:
+                element_data["is_autocomplete"] = True
+                element_data[
+                    "description"] = "Enter a NAICS code or keywords to search. The system will show matching options as you type."
+                element_data["example_searches"] = ["541511", "Software", "Engineering", "Computer"]
+                element_data["sample_values"] = [
+                    {"code": "541511", "description": "Custom Computer Programming Services"},
+                    {"code": "541512", "description": "Computer Systems Design Services"},
+                    {"code": "541330", "description": "Engineering Services"},
+                    {"code": "541712", "description": "Research and Development in Physical Sciences"}
+                ]
+                element_data["min_search_chars"] = 2
+
             # If we have a datalist, add options
             if datalist_options:
                 element_data["datalist_options"] = datalist_options
@@ -967,9 +1046,9 @@ class FormCapture:
 
             # Capture options for select and radio elements
             if element_type == "select" or tag_name == "select":
-                element_data["options"] = await self._capture_select_options_enhanced(element)
+                element_data["options"] = await self._capture_select_options(element)
             elif element_type == "radio":
-                element_data["options"] = await self._capture_radio_options_enhanced(element)
+                element_data["options"] = await self._capture_radio_options(element)
 
             # Take screenshot of the element
             if element_id:
