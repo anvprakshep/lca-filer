@@ -1290,6 +1290,98 @@ def configure_totp():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/naics-search', methods=['GET'])
+@login_required
+def api_naics_search():
+    """API endpoint for NAICS code search that communicates with the FLAG portal."""
+    search_term = request.args.get('term', '')
+    filing_id = request.args.get('filing_id', '')
+
+    if not search_term or not filing_id:
+        return jsonify({"error": "Missing search term or filing ID"}), 400
+
+    # Check if filing exists
+    if filing_id not in active_filings:
+        return jsonify({"error": "Filing not found"}), 404
+
+    # Check if this is an interactive filing with pending interaction
+    interaction_data = interaction_manager.get_interaction(filing_id)
+    if not interaction_data:
+        return jsonify({"error": "No pending interaction for this filing"}), 400
+
+    # Check if the interaction has a fetch_results_function (added in our enhanced handle_naics_code_field)
+    fetch_results_function = interaction_data.get('fetch_results_function')
+    if not fetch_results_function:
+        # If no dynamic function is available, generate sample results based on search term
+        logger.warning(f"No fetch_results_function available for filing {filing_id}, using fallback")
+        results = generate_fallback_naics_results(search_term)
+        return jsonify({"results": results})
+
+    try:
+        # Create a Future to run the async function in the event loop
+        future = asyncio.run_coroutine_threadsafe(
+            fetch_results_function(search_term),
+            loop
+        )
+
+        # Get the results with a timeout
+        results = future.result(timeout=10)
+
+        # If no results found but we have a search term, provide some fallback results
+        if not results and search_term:
+            results = generate_fallback_naics_results(search_term)
+
+        return jsonify({"results": results})
+
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout fetching NAICS results for term '{search_term}'")
+        return jsonify({
+            "error": "Timeout while fetching results",
+            "results": generate_fallback_naics_results(search_term)
+        })
+
+    except Exception as e:
+        logger.error(f"Error fetching NAICS results: {str(e)}")
+        return jsonify({
+            "error": str(e),
+            "results": generate_fallback_naics_results(search_term)
+        })
+
+
+def generate_fallback_naics_results(search_term):
+    """Generate fallback NAICS results if the FLAG portal search fails."""
+    search_term_lower = search_term.lower()
+
+    # Common NAICS codes as fallback
+    common_naics = []
+
+    # # If search term is numeric, try to match by code
+    # if search_term.isdigit():
+    #     filtered_results = [
+    #         naics for naics in common_naics
+    #         if naics["code"].startswith(search_term)
+    #     ]
+    # else:
+    #     # Otherwise match by description
+    #     filtered_results = [
+    #         naics for naics in common_naics
+    #         if search_term_lower in naics["description"].lower()
+    #     ]
+    #
+    # # If still no results, return top 5 most common codes
+    # if not filtered_results:
+    #     fallback_results = common_naics[:5]
+    #     # Add the search term as a custom option
+    #     fallback_results.append({
+    #         "code": search_term if search_term.isdigit() and len(search_term) == 6 else "999999",
+    #         "description": f"Custom: {search_term}",
+    #         "text": f"Use custom value: {search_term}"
+    #     })
+    #     return fallback_results
+
+    return common_naics
+
+
 if __name__ == '__main__':
     # Start the async event loop in a separate thread
     from threading import Thread
