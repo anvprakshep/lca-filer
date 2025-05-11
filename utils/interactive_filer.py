@@ -84,7 +84,8 @@ class InteractiveFiler:
         """
         logger.info(f"Received interaction result for filing {filing_id}")
         self.interaction_results[filing_id] = interaction_result
-        self.interaction_completed.clear()
+        logger.info(f"Setting interaction_completed event for filing {filing_id}")
+        self.interaction_completed.set()
 
     async def _apply_interaction_results(self, page, form_filler, interaction_result: Dict[str, Any]) -> None:
         """
@@ -1493,7 +1494,7 @@ class InteractiveFiler:
                 self.interaction_callback(filing_id, field_data)
 
                 # Wait for interaction
-                logger.info("Waiting for human input on NAICS code field for filing: ", filing_id)
+                logger.info(f"Waiting for human input on NAICS code field for filing: {filing_id}")
                 await self.interaction_completed.wait()
                 self.filing_paused = False
                 logger.info("Interaction complete: ", filing_id)

@@ -882,6 +882,7 @@ def human_interaction(filing_id):
             if interactive_filer:
                 interactive_filer.set_interaction_result(filing_id, interaction_result)
 
+            interactive_filer.interaction_completed.set()
             # Mark interaction as resolved
             interaction_manager.resolve_interaction(filing_id, interaction_result)
 
