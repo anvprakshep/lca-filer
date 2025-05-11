@@ -1495,9 +1495,26 @@ class InteractiveFiler:
 
                 # Wait for interaction
                 logger.info(f"Waiting for human input on NAICS code field for filing: {filing_id}")
-                await self.interaction_completed.wait()
-                self.filing_paused = False
-                logger.info("Interaction complete: ", filing_id)
+                try:
+                    # Add timeout to prevent indefinite waiting
+                    await asyncio.wait_for(self.interaction_completed.wait(), timeout=30)  # 5 minute timeout
+                    logger.info(f"Interaction completed event was set for filing: {filing_id}")
+
+                    # Check if we have results
+                    if filing_id in self.interaction_results:
+                        logger.info(
+                            f"Received interaction results for filing {filing_id}: {self.interaction_results[filing_id]}")
+                    else:
+                        logger.warning(f"No interaction results found for filing {filing_id} despite event being set")
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout waiting for human interaction for filing {filing_id}")
+                    # Optionally reset state or fail gracefully
+                    self.filing_paused = False
+                    return False
+
+                # await self.interaction_completed.wait()
+                # self.filing_paused = False
+                logger.info(f"Interaction complete: {filing_id}")
                 logger.info(self.interaction_results)
                 # Apply the interaction result
                 if filing_id in self.interaction_results:
@@ -1510,11 +1527,11 @@ class InteractiveFiler:
                     logger.info(f"Interaction result: {interaction_result}")
                     logger.info(f"Interaction result items: {interaction_result.items()}")
                     # Get the main field value
-                    for key, value in interaction_result.items():
-                        if field_id in key and not key.endswith('_index') and not key.endswith(
-                                '_selected') and not key.endswith('_selector'):
-                            naics_value = value
-                            break
+                    # for key, value in interaction_result.items():
+                    #     if field_id in key and not key.endswith('_index') and not key.endswith(
+                    #             '_selected') and not key.endswith('_selector'):
+                    #         naics_value = value
+                    #         break
 
                     # Check if we have a specific selected value
                     if not naics_value and f"{field_id}_selected" in interaction_result:
@@ -1547,10 +1564,10 @@ class InteractiveFiler:
                                 logger.info(f"Attempting to use exact selector: {selected_selector}")
 
                                 # First, make sure the dropdown is visible by clicking and entering the value
-                                await naics_field.click()
-                                await naics_field.fill("")
-                                await naics_field.fill(naics_value)
-                                await page.wait_for_timeout(1000)  # Wait for dropdown
+                                # await naics_field.click()
+                                # await naics_field.fill("")
+                                # await naics_field.fill(naics_value)
+                                # await page.wait_for_timeout(1000)  # Wait for dropdown
 
                                 # Now try to find and click the result with the exact selector
                                 result_element = await page.query_selector(selected_selector)
