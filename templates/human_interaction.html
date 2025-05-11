@@ -541,11 +541,8 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    // Setup dynamic autocomplete fields
-    setupDynamicAutocomplete();
-
-    // Setup example search links
-    setupExampleSearchLinks();
+    // Setup dynamic autocomplete fields with improved handling
+    setupEnhancedAutocomplete();
 
     // Setup field preview buttons
     setupFieldPreviewButtons();
@@ -553,20 +550,45 @@ document.addEventListener('DOMContentLoaded', function() {
     // Form validation before submission
     setupFormValidation();
 
-    // Enhanced dynamic autocomplete handling
-    function setupDynamicAutocomplete() {
-        const dynamicFields = document.querySelectorAll('#naics_code');
+    function setupEnhancedAutocomplete() {
+        const dynamicFields = document.querySelectorAll('.autocomplete-input, #naics_code');
 
         dynamicFields.forEach(function(field) {
             const fieldId = field.id;
             const resultsContainer = document.getElementById(fieldId + '_results');
             const loadingIndicator = document.getElementById(fieldId + '_loading');
-            const selectedContainer = field.closest('.autocomplete-field-container').querySelector('.selected-value-container');
+            const selectedContainer = field.closest('.field-container')?.querySelector('.selected-value-container');
             const selectedText = document.getElementById(fieldId + '_selected');
             const selectedInput = document.getElementById(fieldId + '_selected_input');
-            const minChars = parseInt(field.getAttribute('data-min-search-chars') || '2');
 
+            // Create hidden inputs for storing additional information
+            const indexInput = document.createElement('input');
+            indexInput.type = 'hidden';
+            indexInput.id = fieldId + '_index';
+            indexInput.name = fieldId + '_index';
+
+            // Create another hidden input for result selectors
+            const selectorInput = document.createElement('input');
+            selectorInput.type = 'hidden';
+            selectorInput.id = fieldId + '_selector';
+            selectorInput.name = fieldId + '_selector';
+
+            // Add the hidden inputs to the form
+            if (field.closest('.form-group')) {
+                field.closest('.form-group').appendChild(indexInput);
+                field.closest('.form-group').appendChild(selectorInput);
+            } else if (field.closest('.field-container')) {
+                field.closest('.field-container').appendChild(indexInput);
+                field.closest('.field-container').appendChild(selectorInput);
+            } else {
+                // Fallback - add to parent
+                field.parentNode.appendChild(indexInput);
+                field.parentNode.appendChild(selectorInput);
+            }
+
+            const minChars = parseInt(field.getAttribute('data-min-search-chars') || '2');
             let searchTimer = null;
+            let currentResultSelectors = []; // Store selectors for results
 
             // Input handler with debounce
             field.addEventListener('input', function() {
@@ -594,7 +616,120 @@ document.addEventListener('DOMContentLoaded', function() {
                 }, 300);
             });
 
-            // Click outside handler
+            // Function to fetch search results via AJAX
+            function fetchSearchResults(searchTerm, fieldId) {
+                fetch(`/api/naics-search?term=${encodeURIComponent(searchTerm)}&filing_id={{ filing.id }}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        // Hide loading indicator
+                        loadingIndicator.classList.add('hidden');
+
+                        // Clear previous results
+                        resultsContainer.innerHTML = '';
+
+                        if (data.error) {
+                            console.error('Error fetching results:', data.error);
+                            showError(resultsContainer, 'Error fetching results');
+                            return;
+                        }
+
+                        const results = data.results || [];
+
+                        // Store result selectors if available
+                        // currentResultSelectors = data.result_selectors || [];
+                        console.log(results, "results")
+                        if (results.length === 0) {
+                            // No results found
+                            showNoResults(resultsContainer);
+                        } else {
+                            // Create result items
+                            results.forEach(function(result, index) {
+                                const resultItem = document.createElement('div');
+                                resultItem.className = 'result-item';
+
+                                // Format the result based on available data
+                                if (result.code && result.description) {
+                                    resultItem.innerHTML = `
+                                        <span class="result-code">${result.code}</span> -
+                                        <span class="result-description">${result.description}</span>
+                                    `;
+                                } else {
+                                    resultItem.textContent = result.text || result.code || result;
+                                }
+
+                                // Store the value and index as data attributes
+                                resultItem.setAttribute('data-value', result.code || result.text || result);
+                                resultItem.setAttribute('data-index', index);
+
+                                // Store the selector if available
+                                resultItem.setAttribute('data-selector', result.selector);
+
+                                // Click handler to select this item
+                                resultItem.addEventListener('click', function() {
+                                    // Get values from data attributes
+                                    const selectedValue = this.getAttribute('data-value');
+                                    const selectedIndex = this.getAttribute('data-index');
+                                    const selectedSelector = this.getAttribute('data-selector');
+
+                                    // Update the visible input
+                                    field.value = selectedValue;
+
+                                    // Update hidden inputs
+                                    if (selectedInput) {
+                                        selectedInput.value = selectedValue;
+                                    }
+                                    indexInput.value = selectedIndex;
+                                    if (selectedSelector) {
+                                        selectorInput.value = selectedSelector;
+                                    }
+
+                                    // Update display text
+                                    if (selectedText) {
+                                        selectedText.textContent = this.textContent || selectedValue;
+                                    }
+
+                                    // Show selected container
+                                    if (selectedContainer) {
+                                        selectedContainer.classList.remove('hidden');
+                                    }
+
+                                    // Hide results
+                                    resultsContainer.classList.add('hidden');
+                                });
+
+                                resultsContainer.appendChild(resultItem);
+                            });
+                        }
+
+                        // Show results
+                        resultsContainer.classList.remove('hidden');
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        loadingIndicator.classList.add('hidden');
+                        showError(resultsContainer, 'Error fetching results. Please try again.');
+                    });
+            }
+
+            // Helper to show error message
+            function showError(container, message) {
+                const errorItem = document.createElement('div');
+                errorItem.className = 'result-item error';
+                errorItem.textContent = message;
+                container.innerHTML = '';
+                container.appendChild(errorItem);
+                container.classList.remove('hidden');
+            }
+
+            // Helper to show no results message
+            function showNoResults(container) {
+                const noResults = document.createElement('div');
+                noResults.className = 'result-item no-results';
+                noResults.textContent = 'No matching results found';
+                container.appendChild(noResults);
+            }
+
+            // Handle clicks outside to close dropdown
             document.addEventListener('click', function(e) {
                 if (!field.contains(e.target) && !resultsContainer.contains(e.target)) {
                     resultsContainer.classList.add('hidden');
@@ -603,94 +738,8 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Function to fetch search results via AJAX
-    function fetchSearchResults(searchTerm, fieldId) {
-        const resultsContainer = document.getElementById(fieldId + '_results');
-        const loadingIndicator = document.getElementById(fieldId + '_loading');
-
-        // Make API request to get search results
-        fetch(`/api/naics-search?term=${encodeURIComponent(searchTerm)}&filing_id={{ filing.id }}`)
-            .then(response => response.json())
-            .then(data => {
-                // Hide loading indicator
-                loadingIndicator.classList.add('hidden');
-
-                // Clear previous results
-                resultsContainer.innerHTML = '';
-
-                if (data.error) {
-                    console.error('Error fetching results:', data.error);
-                    const errorItem = document.createElement('div');
-                    errorItem.className = 'result-item error';
-                    errorItem.textContent = 'Error fetching results';
-                    resultsContainer.appendChild(errorItem);
-                    resultsContainer.classList.remove('hidden');
-                    return;
-                }
-
-                const results = data.results || [];
-
-                if (results.length === 0) {
-                    // No results found
-                    const noResults = document.createElement('div');
-                    noResults.className = 'result-item no-results';
-                    noResults.textContent = 'No matching results found';
-                    resultsContainer.appendChild(noResults);
-                } else {
-                    // Create result items
-                    results.forEach(function(result) {
-                        const resultItem = document.createElement('div');
-                        resultItem.className = 'result-item';
-
-                        // Format the result based on available data
-                        if (result.code && result.description) {
-                            resultItem.innerHTML = `
-                                <span class="result-code">${result.code}</span> -
-                                <span class="result-description">${result.description}</span>
-                            `;
-                        } else {
-                            resultItem.textContent = result.text || result.code || result;
-                        }
-
-                        // Store the value to use when selected
-                        resultItem.setAttribute('data-value', result.code || result.text || result);
-
-                        // Click handler to select this item
-                        resultItem.addEventListener('click', function() {
-                            // Update the input value
-                            const input = document.getElementById(fieldId);
-                            const selectedValue = this.getAttribute('data-value');
-                            if (input) {
-                                input.value = selectedValue;
-                            }
-
-                            // Update selected value display
-                            updateSelectedValue(fieldId, selectedValue, this.textContent);
-
-                            // Hide results
-                            resultsContainer.classList.add('hidden');
-                        });
-
-                        resultsContainer.appendChild(resultItem);
-                    });
-                }
-
-                // Show results
-                resultsContainer.classList.remove('hidden');
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                loadingIndicator.classList.add('hidden');
-
-                // Show error message
-                const errorItem = document.createElement('div');
-                errorItem.className = 'result-item error';
-                errorItem.textContent = 'Error fetching results. Please try again.';
-                resultsContainer.innerHTML = '';
-                resultsContainer.appendChild(errorItem);
-                resultsContainer.classList.remove('hidden');
-            });
-    }
+    // Setup example search links
+    setupExampleSearchLinks();
 
     function setupExampleSearchLinks() {
         // Handle example search links
@@ -713,25 +762,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });
         });
-    }
-
-    function updateSelectedValue(fieldId, value, displayText) {
-        // Update the selected value display
-        const selectedDisplay = document.getElementById(fieldId + '_selected');
-        const selectedInput = document.getElementById(fieldId + '_selected_input');
-        const selectedContainer = document.querySelector('#' + fieldId).closest('.autocomplete-field-container').querySelector('.selected-value-container');
-
-        if (selectedDisplay) {
-            selectedDisplay.textContent = displayText || value;
-        }
-
-        if (selectedInput) {
-            selectedInput.value = value;
-        }
-
-        if (selectedContainer) {
-            selectedContainer.classList.remove('hidden');
-        }
     }
 
     function setupFieldPreviewButtons() {

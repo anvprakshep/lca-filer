@@ -114,16 +114,21 @@ class StatusUpdateManager:
 # Create status update manager
 status_update_manager = StatusUpdateManager()
 
-
 # Interaction manager
 class InteractionManager:
     def __init__(self):
         self.lock = threading.Lock()
         self.interaction_queue = {}
+        self.interaction_history = {}  # Store history of all interactions
 
     def register_interaction(self, filing_id, interaction_data):
         with self.lock:
             self.interaction_queue[filing_id] = interaction_data
+
+            # Initialize history for this filing if needed
+            if filing_id not in self.interaction_history:
+                self.interaction_history[filing_id] = []
+
             # Update active filings with interaction needed status
             if filing_id in active_filings:
                 active_filings[filing_id]["interaction_needed"] = interaction_data
@@ -149,10 +154,20 @@ class InteractionManager:
         with self.lock:
             if filing_id in self.interaction_queue:
                 # Keep a copy of the interaction for history
+                if filing_id in self.interaction_history:
+                    # Add to history
+                    self.interaction_history[filing_id].append({
+                        "interaction": self.interaction_queue[filing_id],
+                        "result": interaction_result,
+                        "timestamp": datetime.now().isoformat()
+                    })
+
                 if filing_id in active_filings:
+                    # Initialize interaction history if needed
                     if "interaction_history" not in active_filings[filing_id]:
                         active_filings[filing_id]["interaction_history"] = []
 
+                    # Add to history
                     active_filings[filing_id]["interaction_history"].append({
                         "interaction": self.interaction_queue[filing_id],
                         "result": interaction_result,
@@ -173,12 +188,16 @@ class InteractionManager:
                 # Remove from queue
                 del self.interaction_queue[filing_id]
                 return True
+
         return False
+
+    def get_interaction_history(self, filing_id):
+        with self.lock:
+            return self.interaction_history.get(filing_id, [])
 
 
 # Create interaction manager
 interaction_manager = InteractionManager()
-
 
 def enhanced_status_update_callback(filing_id: str, update: Dict[str, Any]) -> None:
     """
@@ -205,6 +224,11 @@ def enhanced_status_update_callback(filing_id: str, update: Dict[str, Any]) -> N
         elif step == "form_type_selection":
             update["stage"] = "Selecting H-1B form type"
             update["progress"] = 25
+        elif step == "naics_code_handling":
+            update["stage"] = "Processing NAICS code field"
+            update["progress"] = 30
+            if "current_section" not in update:
+                update["current_section"] = "Employer Information"
         elif "section" in step:
             # Extract section name if available
             section_name = update.get("current_section", "form section")
@@ -235,7 +259,7 @@ def enhanced_status_update_callback(filing_id: str, update: Dict[str, Any]) -> N
 
 def prepare_human_interaction_template_data(interaction_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Prepare data for the human interaction template with improved field rendering.
+    Prepare data for the human interaction template with improved field rendering and NAICS handling.
 
     Args:
         interaction_data: Raw interaction data from the filing process
@@ -262,6 +286,10 @@ def prepare_human_interaction_template_data(interaction_data: Dict[str, Any]) ->
             "The automation couldn't find some expected elements. "
             "Please make selections based on what you see in the screenshot."
         )
+
+    # Pass through the fetch_results_function for NAICS fields if available
+    if 'fetch_results_function' in interaction_data:
+        template_data['interaction']['fetch_results_function'] = interaction_data['fetch_results_function']
 
     # Group fields by type for better organization
     grouped_fields = {
@@ -301,6 +329,14 @@ def prepare_human_interaction_template_data(interaction_data: Dict[str, Any]) ->
             'read_only': field.get('read_only', False)
         }
 
+        # Add special attributes for autocomplete/NAICS fields
+        if field_type == 'autocomplete' or field.get('is_autocomplete', False):
+            field_obj['is_autocomplete'] = True
+            field_obj['dynamic_search'] = field.get('dynamic_search', False)
+            field_obj['example_searches'] = field.get('example_searches', [])
+            field_obj['min_search_chars'] = field.get('min_search_chars', 2)
+            field_obj['sample_values'] = field.get('sample_values', [])
+
         # Handle options for select, radio, etc.
         if 'options' in field:
             field_obj['options'] = []
@@ -322,7 +358,7 @@ def prepare_human_interaction_template_data(interaction_data: Dict[str, Any]) ->
             grouped_fields['checkbox'].append(field_obj)
         elif field_type == 'radio':
             grouped_fields['radio'].append(field_obj)
-        elif field_type in ['file', 'autocomplete', 'combobox']:
+        elif field_type in ['file', 'autocomplete', 'combobox'] or field.get('is_autocomplete', False):
             grouped_fields['complex'].append(field_obj)
         else:
             grouped_fields['other'].append(field_obj)
@@ -824,18 +860,21 @@ def human_interaction(filing_id):
             # Extract field values from form
             interaction_result = {}
 
-            for field in interaction_data["fields"]:
-                field_id = field.get("id")
-                if field_id in request.form:
-                    # Process based on field type
-                    field_type = field.get("type")
+            # Debug logging to help troubleshoot
+            logger.debug(f"Form data for filing {filing_id}: {request.form}")
+            print(f"Form data for filing {filing_id}: {request.form}")
+            # Process all fields from the form, including special fields
+            for key, value in request.form.items():
+                # Store all form data, including the special fields for NAICS selection
+                interaction_result[key] = value
+                logger.debug(f"Processing form field: {key} = {value}")
+                print(f"Processing form field: {key} = {value}")
 
-                    if field_type == "checkbox":
-                        # Checkboxes will only be in the form if checked
-                        interaction_result[field_id] = request.form[field_id] == "true"
-                    else:
-                        interaction_result[field_id] = request.form[field_id]
+            # Log the complete interaction result
+            logger.info(f"Interaction result for filing {filing_id}: {interaction_result}")
 
+            print("interaction_result", interaction_result)
+            print("interaction_filer", interactive_filer)
             # Pass the results back to the interactive filer
             if interactive_filer:
                 interactive_filer.set_interaction_result(filing_id, interaction_result)
@@ -1289,11 +1328,10 @@ def configure_totp():
         logger.error(f"Error configuring TOTP: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/api/naics-search', methods=['GET'])
 @login_required
 def api_naics_search():
-    """API endpoint for NAICS code search that communicates with the FLAG portal."""
+    """API endpoint for NAICS code search that communicates with the FLAG portal and returns selectors."""
     search_term = request.args.get('term', '')
     filing_id = request.args.get('filing_id', '')
 
@@ -1309,13 +1347,13 @@ def api_naics_search():
     if not interaction_data:
         return jsonify({"error": "No pending interaction for this filing"}), 400
 
-    # Check if the interaction has a fetch_results_function (added in our enhanced handle_naics_code_field)
+    # Check if the interaction has a fetch_results_function
     fetch_results_function = interaction_data.get('fetch_results_function')
     if not fetch_results_function:
         # If no dynamic function is available, generate sample results based on search term
         logger.warning(f"No fetch_results_function available for filing {filing_id}, using fallback")
         results = generate_fallback_naics_results(search_term)
-        return jsonify({"results": results})
+        return jsonify({"results": results, "result_selectors": []})
 
     try:
         # Create a Future to run the async function in the event loop
@@ -1325,28 +1363,52 @@ def api_naics_search():
         )
 
         # Get the results with a timeout
-        results = future.result(timeout=10)
+        response = future.result(timeout=10)
+
+        # Log the response structure for debugging
+        logger.debug(f"NAICS search response for term '{search_term}': {response}")
+
+        # Enhanced to handle the new response format that includes element selectors
+        results = []
+        result_selectors = []
+
+        if isinstance(response, dict):
+            # New format with results and selectors
+            results = response.get("results", [])
+            result_selectors = response.get("result_selectors", [])
+        else:
+            # Old format with just results
+            results = response or []
 
         # If no results found but we have a search term, provide some fallback results
         if not results and search_term:
             results = generate_fallback_naics_results(search_term)
 
-        return jsonify({"results": results})
+        # Return both results and selectors
+        response_data = {
+            "results": results,
+            "result_selectors": result_selectors
+        }
+
+        logger.debug(f"Sending NAICS search response: {response_data}")
+
+        return jsonify(response_data)
 
     except asyncio.TimeoutError:
         logger.error(f"Timeout fetching NAICS results for term '{search_term}'")
         return jsonify({
             "error": "Timeout while fetching results",
-            "results": generate_fallback_naics_results(search_term)
+            "results": generate_fallback_naics_results(search_term),
+            "result_selectors": []
         })
 
     except Exception as e:
         logger.error(f"Error fetching NAICS results: {str(e)}")
         return jsonify({
             "error": str(e),
-            "results": generate_fallback_naics_results(search_term)
+            "results": generate_fallback_naics_results(search_term),
+            "result_selectors": []
         })
-
 
 def generate_fallback_naics_results(search_term):
     """Generate fallback NAICS results if the FLAG portal search fails."""

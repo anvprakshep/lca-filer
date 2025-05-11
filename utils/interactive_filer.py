@@ -88,7 +88,7 @@ class InteractiveFiler:
 
     async def _apply_interaction_results(self, page, form_filler, interaction_result: Dict[str, Any]) -> None:
         """
-        Enhanced method to apply human interaction results to the form with special handling for NAICS codes.
+        Enhanced method to apply human interaction results to the form with improved handling for NAICS codes.
 
         Args:
             page: Playwright page
@@ -104,83 +104,207 @@ class InteractiveFiler:
 
             # Apply each field value
             for field_id, field_value in interaction_result.items():
-                # Skip special "_selected" fields as they are handled with their main field
-                if field_id.endswith("_selected"):
+                # Skip special "_selected", "_index", and "_selector" fields as they are handled with their main field
+                if field_id.endswith("_selected") or field_id.endswith("_index") or field_id.endswith("_selector"):
                     continue
 
                 try:
                     # Special handling for NAICS code field
                     if "naics" in field_id.lower():
-                        # Check if we have a _selected value for this field
+                        # Get additional info from interaction results
                         selected_value = interaction_result.get(f"{field_id}_selected", field_value)
+                        selected_index = interaction_result.get(f"{field_id}_index")
+                        selected_selector = interaction_result.get(f"{field_id}_selector")
 
-                        # Try to find the field using multiple selector strategies
-                        naics_selectors = [
-                            f"#{field_id}",
-                            f"[name='{field_id}']",
-                            "//input[contains(@id, 'naics')]",
-                            "//input[contains(@name, 'naics')]",
-                            "#formContainer > form > div:nth-child(1) > fieldset:nth-child(2) > div > div:nth-child(6) > div > div > div.react-autosuggest__container > div.input-container > input",
-                            "/html/body/div[9]/div/div/div[2]/div[2]/form/div[1]/fieldset[1]/div/div[6]/div/div/div[2]/div[1]/input"
-                        ]
+                        # Check if we have the pending interaction data with element references
+                        if self.pending_interaction and "field_element" in self.pending_interaction:
+                            naics_field = self.pending_interaction["field_element"]
 
-                        naics_field = None
-                        for selector in naics_selectors:
+                            # Check if the element is still attached to the DOM
+                            is_detached = False
                             try:
-                                naics_field = await page.query_selector(selector)
-                                if naics_field:
-                                    logger.info(f"Found NAICS field using selector: {selector}")
-                                    break
-                            except Exception as e:
-                                logger.debug(f"Error finding NAICS field with selector {selector}: {str(e)}")
+                                is_detached = await naics_field.is_detached()
+                            except Exception:
+                                is_detached = True
 
-                        if naics_field:
-                            # Fill the field
-                            await naics_field.click()
-                            await naics_field.fill("")
-                            await naics_field.fill(selected_value)
-                            await page.wait_for_timeout(1000)  # Wait for autocomplete to appear
+                            if is_detached:
+                                logger.warning("Saved NAICS field element is detached, trying to find it again")
 
-                            # Try to find and click on a matching result
-                            try:
-                                # First look for exact match in results
-                                result_selectors = [
-                                    f"li:text('{selected_value}')",
-                                    f"[role='option']:text('{selected_value}')",
-                                    ".react-autosuggest__suggestion:first-child",
-                                    ".autocomplete-result-item:first-child",
-                                    "li:first-child"
+                                # Try to find using the saved selector
+                                if "field_selector" in self.pending_interaction:
+                                    try:
+                                        naics_field = await page.query_selector(
+                                            self.pending_interaction["field_selector"])
+                                        logger.info("Found NAICS field using saved selector")
+                                    except Exception as e:
+                                        logger.debug(f"Error finding NAICS field with saved selector: {str(e)}")
+
+                                # If still not found, try standard selectors
+                                if not naics_field:
+                                    naics_selectors = [
+                                        f"#{field_id}",
+                                        f"[name='{field_id}']",
+                                        "//input[contains(@id, 'naics')]",
+                                        "//input[contains(@name, 'naics')]"
+                                    ]
+
+                                    for selector in naics_selectors:
+                                        try:
+                                            naics_field = await page.query_selector(selector)
+                                            if naics_field:
+                                                logger.info(f"Found NAICS field using selector: {selector}")
+                                                break
+                                        except Exception as e:
+                                            logger.debug(
+                                                f"Error finding NAICS field with selector {selector}: {str(e)}")
+
+                            if naics_field:
+                                # We have the NAICS field, now apply the value
+                                logger.info(f"Applying NAICS code: {selected_value}")
+
+                                # Take screenshot before applying
+                                await self.lca_filer.screenshot_manager.take_screenshot(
+                                    page, f"naics_before_apply_{selected_value}")
+
+                                # Fill the field
+                                await naics_field.click()
+                                await naics_field.fill("")
+                                await naics_field.fill(selected_value)
+                                await page.wait_for_timeout(1000)  # Wait for autocomplete to appear
+
+                                # Different strategies to select an option
+                                result_clicked = False
+
+                                # Strategy 1: If we have a specific selector from the result
+                                if selected_selector:
+                                    try:
+                                        result_element = await page.query_selector(selected_selector)
+                                        if result_element:
+                                            await result_element.click()
+                                            logger.info(f"Clicked result using stored selector: {selected_selector}")
+                                            result_clicked = True
+                                    except Exception as e:
+                                        logger.warning(f"Error clicking result with selector: {str(e)}")
+
+                                # Strategy 2: If we have an index, try to use that
+                                if not result_clicked and selected_index is not None:
+                                    try:
+                                        # Find all dropdown items and click the one at specified index
+                                        dropdown_selectors = [
+                                            "li",
+                                            "[role='option']",
+                                            ".react-autosuggest__suggestion",
+                                            ".autocomplete-result-item"
+                                        ]
+
+                                        for selector in dropdown_selectors:
+                                            items = await page.query_selector_all(selector)
+                                            if items and 0 <= int(selected_index) < len(items):
+                                                await items[int(selected_index)].click()
+                                                logger.info(f"Clicked dropdown item at index {selected_index}")
+                                                result_clicked = True
+                                                break
+                                    except Exception as e:
+                                        logger.warning(
+                                            f"Error selecting dropdown item at index {selected_index}: {str(e)}")
+
+                                # Strategy 3: Try to find a matching result by text
+                                if not result_clicked:
+                                    result_selectors = [
+                                        f"li:text('{selected_value}')",
+                                        f"[role='option']:text('{selected_value}')",
+                                        ".react-autosuggest__suggestion:first-child",
+                                        ".autocomplete-result-item:first-child",
+                                        "li:first-child"
+                                    ]
+
+                                    for selector in result_selectors:
+                                        try:
+                                            result = await page.query_selector(selector)
+                                            if result:
+                                                await result.click()
+                                                logger.info(f"Clicked result with selector: {selector}")
+                                                result_clicked = True
+                                                break
+                                        except Exception as e:
+                                            logger.debug(f"Error clicking result with selector {selector}: {str(e)}")
+
+                                # Strategy 4: Use keyboard navigation as a last resort
+                                if not result_clicked:
+                                    try:
+                                        await naics_field.press("ArrowDown")
+                                        await page.wait_for_timeout(500)
+                                        await naics_field.press("Enter")
+                                        logger.info("Used keyboard navigation to select result")
+                                        result_clicked = True
+                                    except Exception as e:
+                                        logger.warning(f"Error using keyboard navigation: {str(e)}")
+
+                                # If all else fails, just tab out to confirm the entry
+                                if not result_clicked:
+                                    try:
+                                        await naics_field.press("Tab")
+                                        logger.info("Pressed Tab to confirm entry")
+                                    except Exception as e:
+                                        logger.warning(f"Error pressing Tab: {str(e)}")
+
+                                # Mark as applied regardless, since we at least filled the field
+                                applied_fields.append(field_id)
+                            else:
+                                logger.error(f"Could not find NAICS field for {field_id}")
+                                failed_fields.append(field_id)
+                        else:
+                            # No saved element info, fall back to standard approach
+                            logger.warning("No saved NAICS element information, using fallback method")
+
+                            # Find the field using multiple selector strategies
+                            field_element = None
+
+                            # Try by ID first
+                            field_element = await page.query_selector(f"#{field_id}")
+
+                            # If not found, try by name
+                            if not field_element:
+                                field_element = await page.query_selector(f"[name='{field_id}']")
+
+                            # If still not found, try broader selectors
+                            if not field_element:
+                                naics_selectors = [
+                                    "//input[contains(@id, 'naics')]",
+                                    "//input[contains(@name, 'naics')]",
+                                    "//div[contains(text(), 'NAICS')]/following::input[1]"
                                 ]
 
-                                for selector in result_selectors:
+                                for selector in naics_selectors:
+                                    element = await page.query_selector(selector)
+                                    if element:
+                                        field_element = element
+                                        break
+
+                            if field_element:
+                                # Fill the value
+                                await field_element.click()
+                                await field_element.fill("")
+                                await field_element.fill(selected_value)
+                                await page.wait_for_timeout(1000)
+
+                                # Try keyboard navigation
+                                try:
+                                    await field_element.press("ArrowDown")
+                                    await page.wait_for_timeout(500)
+                                    await field_element.press("Enter")
+                                except Exception as e:
+                                    logger.warning(f"Error with keyboard navigation in fallback method: {str(e)}")
+                                    # Try tabbing out
                                     try:
-                                        result = await page.query_selector(selector)
-                                        if result:
-                                            await result.click()
-                                            logger.info(f"Clicked NAICS result with selector: {selector}")
-                                            break
-                                    except Exception as e:
-                                        logger.debug(f"Error clicking result with selector {selector}: {str(e)}")
+                                        await field_element.press("Tab")
+                                    except Exception:
+                                        pass
 
-                                # If no result clicked, try using keyboard navigation
-                                await naics_field.press("ArrowDown")
-                                await page.wait_for_timeout(500)
-                                await naics_field.press("Enter")
-
-                                # If all else fails, just press Tab to move to next field
-                                await page.wait_for_timeout(500)
-                                await naics_field.press("Tab")
-
-                                # Mark as applied
                                 applied_fields.append(field_id)
-
-                            except Exception as e:
-                                logger.warning(f"Error selecting NAICS result: {str(e)}")
-                                # Even if selection failed, mark as applied since we did fill the field
-                                applied_fields.append(field_id)
-                        else:
-                            logger.warning(f"NAICS field not found for {field_id}")
-                            failed_fields.append(field_id)
+                            else:
+                                logger.error(f"Could not find NAICS field in fallback approach")
+                                failed_fields.append(field_id)
                     else:
                         # Standard field handling (non-NAICS fields)
                         # Find the field using multiple selector strategies
@@ -211,10 +335,52 @@ class InteractiveFiler:
                                 field_type = "textarea"
 
                             # Fill the field with appropriate strategy
-                            await form_filler.fill_field(field_id, field_value, field_type)
-                            applied_fields.append(field_id)
+                            if field_type in ["text", "email", "number", "tel", "url", "password", "textarea"]:
+                                # Clear the field and fill it
+                                await field_element.click()
+                                await field_element.fill("")
+                                await field_element.fill(str(field_value))
+                                applied_fields.append(field_id)
+                            elif field_type in ["select", "dropdown"]:
+                                # For select elements, we can use the Playwright select_option method
+                                await page.select_option(f"#{field_id}, [name='{field_id}']", field_value)
+                                applied_fields.append(field_id)
+                            elif field_type == "radio":
+                                # For radio buttons, we need to find the specific option
+                                radio_selector = f"input[type='radio'][name='{field_id}'][value='{field_value}']"
+                                radio_element = await page.query_selector(radio_selector)
+
+                                if radio_element:
+                                    await radio_element.click()
+                                    applied_fields.append(field_id)
+                                else:
+                                    # Try a more general approach
+                                    radio_group = await page.query_selector_all(
+                                        f"input[type='radio'][name='{field_id}']")
+                                    if radio_group:
+                                        for radio in radio_group:
+                                            value = await radio.get_attribute("value")
+                                            if value == field_value:
+                                                await radio.click()
+                                                applied_fields.append(field_id)
+                                                break
+                                    if field_id not in applied_fields:
+                                        failed_fields.append(field_id)
+                            elif field_type == "checkbox":
+                                # For checkboxes, get current state and click if needed
+                                current_checked = await field_element.is_checked()
+                                should_be_checked = field_value in [True, "true", "True", "yes", "Yes", "1"]
+
+                                if current_checked != should_be_checked:
+                                    await field_element.click()
+
+                                applied_fields.append(field_id)
+                            else:
+                                # Default handling - just try to fill
+                                await field_element.fill(str(field_value))
+                                applied_fields.append(field_id)
                         else:
-                            # Field not found, try fallback approaches
+                            # Field element not found - try some fallbacks
 
                             # For radio buttons, try looking for any radio with matching name and value
                             if isinstance(field_value, str):
@@ -226,16 +392,32 @@ class InteractiveFiler:
                                     applied_fields.append(field_id)
                                     continue
 
-                            # If all else fails, log the issue
-                            logger.warning(f"Field not found: {field_id}")
-                            failed_fields.append(field_id)
+                            # Try to find any element with similar ID or name
+                            similar_selectors = [
+                                f"[id*='{field_id}']",
+                                f"[name*='{field_id}']",
+                                f"//label[contains(text(), '{field_id}')]/following::input[1]"
+                            ]
+
+                            for selector in similar_selectors:
+                                element = await page.query_selector(selector)
+                                if element:
+                                    tag_name = await element.evaluate("el => el.tagName.toLowerCase()")
+                                    if tag_name in ["input", "select", "textarea"]:
+                                        await element.fill(str(field_value))
+                                        applied_fields.append(field_id)
+                                        break
+
+                            if field_id not in applied_fields:
+                                logger.warning(f"Field not found: {field_id}")
+                                failed_fields.append(field_id)
 
                 except Exception as e:
                     logger.error(f"Error applying value to field {field_id}: {str(e)}")
                     failed_fields.append(field_id)
 
             # Take a screenshot after applying all fields
-            screenshot_path = await self.lca_filer.screenshot_manager.take_screenshot(
+            await self.lca_filer.screenshot_manager.take_screenshot(
                 page,
                 "after_applying_interaction_results"
             )
@@ -803,8 +985,10 @@ class InteractiveFiler:
                                     "message": "Continuing after human interaction"
                                 })
 
+                                print("continuing after human interaction...")
                                 # Apply the interaction results to the form
                                 if filing_id in self.interaction_results:
+                                    print("interaction results", self.interaction_results[filing_id])
                                     interaction_result = self.interaction_results[filing_id]
                                     await self._apply_interaction_results(page, form_filler, interaction_result)
                                     del self.interaction_results[filing_id]
@@ -1088,7 +1272,7 @@ class InteractiveFiler:
 
     async def handle_naics_code_field(self, page, form_filler, application_data=None):
         """
-        Enhanced handler for the NAICS Code field that fetches actual results from FLAG portal.
+        Enhanced handler for the NAICS Code field that preserves element references.
 
         Args:
             page: Playwright page
@@ -1108,10 +1292,12 @@ class InteractiveFiler:
             naics_selectors = [
                 {
                     "selector": "#formContainer > form > div:nth-child(1) > fieldset:nth-child(2) > div > div:nth-child(6) > div > div > div.react-autosuggest__container > div.input-container > input",
-                    "description": "NAICS Code"},
+                    "description": "NAICS Code"
+                },
                 {
                     "selector": "/html/body/div[9]/div/div/div[2]/div[2]/form/div[1]/fieldset[1]/div/div[6]/div/div/div[2]/div[1]/input",
-                    "description": "NAICS Code"},
+                    "description": "NAICS Code"
+                },
                 # Add additional selectors that might match the NAICS input field
                 {"selector": "//input[contains(@id, 'naics')]", "description": "NAICS Code"},
                 {"selector": "//input[contains(@name, 'naics')]", "description": "NAICS Code"},
@@ -1119,11 +1305,14 @@ class InteractiveFiler:
             ]
 
             naics_field = None
+            naics_field_selector = None  # Store the successful selector
+
             for selector in naics_selectors:
                 try:
                     naics_field = await page.query_selector(selector["selector"])
                     if naics_field:
                         logger.info(f"Found NAICS code field with selector: {selector['selector']}")
+                        naics_field_selector = selector["selector"]  # Store the successful selector
                         break
                 except Exception as e:
                     logger.debug(f"Error finding NAICS code with selector {selector['selector']}: {str(e)}")
@@ -1142,7 +1331,7 @@ class InteractiveFiler:
             if application_data and "employer" in application_data:
                 naics_code = application_data["employer"].get("naics")
 
-            # Function to fetch NAICS search results from FLAG portal
+            # Create a function to fetch NAICS search results from FLAG portal
             async def fetch_naics_search_results(search_term):
                 try:
                     logger.info(f"Fetching NAICS search results for: {search_term}")
@@ -1157,97 +1346,66 @@ class InteractiveFiler:
 
                     # Try different selectors for the results container
                     result_container_selectors = [
-                        "#react-autowhatever-1 > ul"
+                        "#react-autowhatever-1 > ul",
+                        ".react-autosuggest__suggestions-container > ul",
+                        "[role='listbox']",
+                        ".dropdown-menu",
+                        ".autocomplete-results"
                     ]
 
                     results = []
+                    result_selectors = []  # Store selectors for results
 
                     # Try to find the results container with different selectors
                     for container_selector in result_container_selectors:
-                        print("container_selector", container_selector)
                         try:
                             # Check if this container exists
                             container = await page.query_selector(container_selector)
-                            print("container", container)
                             if container:
-                                print(f"Found container with selector: {container}")
+                                logger.info(f"Found result container with selector: {container_selector}")
+
                                 # Get all result items from this container
                                 item_selectors = [
-                                    "li"
+                                    "li",
+                                    "[role='option']",
+                                    ".autocomplete-result-item",
+                                    ".dropdown-item"
                                 ]
 
                                 for item_selector in item_selectors:
                                     full_selector = f"{container_selector} {item_selector}"
-                                    print(f"full_selector: {full_selector}")
-                                    items = await page.query_selector_all(full_selector)
-                                    print(f"items: {items}")
-                                    if items and len(items) > 0:
-                                        for item in items:
-                                            print(f"item: {item}")
+                                    list_items = await page.query_selector_all(full_selector)
+                                    print("items", list_items)
+                                    if list_items and len(list_items) > 0:
+                                        for i, item in enumerate(list_items):
                                             item_text = await item.text_content()
-                                            print(f"item_text: {item_text}")
+
                                             if item_text and item_text.strip():
-                                                # Try to extract code and description
                                                 text = item_text.strip()
 
-                                                # NAICS codes are often formatted as "123456 - Description"
-                                                # code_match = re.search(r'(\d{6})\s*-\s*(.*)', text)
-                                                # if code_match:
-                                                #     code = code_match.group(1)
-                                                #     description = code_match.group(2).strip()
-                                                #     results.append(
-                                                #         {"code": code, "description": description, "text": text})
-                                                # else:
-                                                #     # If no clear format, just use the text
-                                                results.append({"code": text, "description": "", "text": text})
-                                        print("results", results)
+                                                # Add result data
+                                                results.append({
+                                                    "code": text,
+                                                    "description": "",
+                                                    "text": text,
+                                                    "index": i,
+                                                    "selector": f"{full_selector}:nth-child({i + 1})"
+                                                })
+
                                         if results:
-                                            break
+                                            print(results, "results from search")
+                                            break  # We've found results, no need to try other item selectors
 
                                 if results:
-                                    break
-                        except Exception as exception:
-                            logger.debug(f"Error getting results from container {container_selector}: {str(exception)}")
-
-                    # If no results found through containers, take a screenshot of the current state
-                    # to help diagnose what's on the page
-                    if not results:
-                        await self.lca_filer.screenshot_manager.take_screenshot(
-                            page, f"naics_search_no_results_{search_term}")
-
-                        # Try to get any visible text that might be results
-                        try:
-                            # Look for any text elements that might be search results
-                            visible_elements = await page.evaluate("""
-                                () => {
-                                    const allElements = document.querySelectorAll('div, li, span, a');
-                                    return Array.from(allElements)
-                                        .filter(el => {
-                                            // Get computed style
-                                            const style = window.getComputedStyle(el);
-                                            // Check if element is visible
-                                            return style.display !== 'none' && 
-                                                   style.visibility !== 'hidden' && 
-                                                   el.textContent.trim().length > 0;
-                                        })
-                                        .map(el => el.textContent.trim())
-                                        .filter(text => text.includes('" + search_term + "'));
-                                }
-                            """)
-
-                            if visible_elements and len(visible_elements) > 0:
-                                # Convert these text elements to results
-                                for text in visible_elements:
-                                    if any(char.isdigit() for char in text):  # Only include if it might be a NAICS code
-                                        results.append({"code": text, "description": "", "text": text})
+                                    break  # We've found results, no need to try other containers
                         except Exception as e:
-                            logger.debug(f"Error finding visible elements: {str(e)}")
+                            logger.debug(f"Error getting results from container {container_selector}: {str(e)}")
 
                     # Take a screenshot of the search results
                     await self.lca_filer.screenshot_manager.take_screenshot(
                         page, f"naics_search_results_{search_term}")
 
-                    # Return found results or fallback to empty list
+                    # Return both the results and the selectors for the elements
                     return results
 
                 except Exception as e:
@@ -1276,7 +1434,9 @@ class InteractiveFiler:
                 "has_errors": False,
                 "guidance": "Please enter a NAICS code for the employer. When you start typing, options from the FLAG portal will appear.",
                 "timestamp": datetime.now().isoformat(),
-                "fetch_results_function": fetch_naics_search_results  # Pass the function to fetch results
+                "fetch_results_function": fetch_naics_search_results,  # Pass the function to fetch results
+                "field_element": naics_field,  # Store the actual element reference
+                "field_selector": naics_field_selector  # Store the successful selector
             }
 
             # Get current filing ID
@@ -1311,99 +1471,159 @@ class InteractiveFiler:
 
                     # Find NAICS value in results
                     naics_value = None
+                    selected_index = None
+                    selected_selector = None
+
+                    # Get the main field value
                     for key, value in interaction_result.items():
-                        if field_id in key or 'naics' in key.lower():
+                        if field_id in key and not key.endswith('_index') and not key.endswith(
+                                '_selected') and not key.endswith('_selector'):
                             naics_value = value
                             break
 
+                    # Check if we have a specific selected value
                     if not naics_value and f"{field_id}_selected" in interaction_result:
                         naics_value = interaction_result[f"{field_id}_selected"]
 
+                    # Get the index and selector if available
+                    if f"{field_id}_index" in interaction_result:
+                        selected_index = interaction_result[f"{field_id}_index"]
+
+                    if f"{field_id}_selector" in interaction_result:
+                        selected_selector = interaction_result[f"{field_id}_selector"]
+
                     if naics_value:
-                        logger.info(f"Applying NAICS code: {naics_value}")
+                        logger.info(
+                            f"Applying NAICS code: {naics_value} (index: {selected_index}, selector: {selected_selector})")
 
-                        # Fill the NAICS code field
-                        await naics_field.click()
-                        await naics_field.fill("")
-                        await naics_field.fill(naics_value)
-
-                        # Wait for autocomplete results to appear
-                        await page.wait_for_timeout(1000)
-
-                        # Try to find and click on the matching result
-                        result_clicked = False
-
-                        # Take screenshot to see the state after filling
+                        # Take screenshot to see the state before applying
                         await self.lca_filer.screenshot_manager.take_screenshot(
-                            page, f"naics_after_fill_{naics_value}")
+                            page, f"naics_before_apply_{naics_value}")
 
-                        # Try different approaches to select a result
+                        # Try different strategies to apply the selection
+                        success = False
 
-                        # Approach 1: Try to find the specific result item
-                        result_selectors = [
-                            f"li:text('{naics_value}')",
-                            f"[role='option']:text('{naics_value}')",
-                            f".react-autosuggest__suggestion:text('{naics_value}')",
-                            f".autocomplete-result-item:text('{naics_value}')"
-                        ]
-
-                        for selector in result_selectors:
+                        # Strategy 1: If we have a selector for the specific result, try to use it
+                        if selected_selector:
                             try:
-                                result_element = await page.query_selector(selector)
+                                # Try to find and click the element using the stored selector
+                                result_element = await page.query_selector(selected_selector)
                                 if result_element:
                                     await result_element.click()
-                                    logger.info(f"Clicked specific result: {selector}")
-                                    result_clicked = True
-                                    break
+                                    logger.info(f"Clicked result using stored selector: {selected_selector}")
+                                    success = True
                             except Exception as e:
-                                logger.debug(f"Error clicking result {selector}: {str(e)}")
+                                logger.warning(f"Error clicking result with stored selector: {str(e)}")
 
-                        # Approach 2: If no specific result found, try clicking the first result
-                        if not result_clicked:
-                            first_result_selectors = [
-                                ".react-autosuggest__suggestion:first-child",
-                                "[role='option']:first-child",
-                                "li:first-child",
-                                ".autocomplete-result-item:first-child"
-                            ]
+                        # Strategy 2: If we have the field element, try filling and using index to select
+                        if not success:
+                            try:
+                                # Get the field element (from pending interaction or find it again)
+                                field_element = field_data.get("field_element")
 
-                            for selector in first_result_selectors:
+                                # Check if element is still valid
+                                is_detached = False
                                 try:
-                                    first_result = await page.query_selector(selector)
-                                    if first_result:
-                                        await first_result.click()
-                                        logger.info(f"Clicked first result: {selector}")
-                                        result_clicked = True
-                                        break
-                                except Exception as e:
-                                    logger.debug(f"Error clicking first result {selector}: {str(e)}")
+                                    is_detached = await field_element.is_detached()
+                                except Exception:
+                                    is_detached = True
 
-                        # Approach 3: If still no result clicked, try pressing keyboard keys
-                        if not result_clicked:
-                            try:
-                                # Press arrow down to select first option, then Enter
-                                await naics_field.press("ArrowDown")
-                                await page.wait_for_timeout(500)
-                                await naics_field.press("Enter")
-                                logger.info("Used keyboard navigation to select result")
-                                result_clicked = True
-                            except Exception as e:
-                                logger.warning(f"Error using keyboard navigation: {str(e)}")
+                                if is_detached:
+                                    logger.warning("Field element is detached, trying to find it again")
 
-                        # As a last resort, just tab out of the field
-                        if not result_clicked:
-                            try:
-                                await naics_field.press("Tab")
-                                logger.info("Pressed Tab to confirm entry")
+                                    # Try to find using the saved selector
+                                    field_selector = field_data.get("field_selector")
+                                    if field_selector:
+                                        field_element = await page.query_selector(field_selector)
+
+                                    # If still not found, try standard selectors
+                                    if not field_element:
+                                        field_element = await page.query_selector(f"#{field_id}, [name='{field_id}']")
+
+                                if field_element:
+                                    # Clear and fill the field
+                                    await field_element.click()
+                                    await field_element.fill("")
+                                    await field_element.fill(naics_value)
+                                    await page.wait_for_timeout(1000)  # Wait for dropdown
+
+                                    # If we have an index, try to select that specific item
+                                    if selected_index is not None:
+                                        try:
+                                            # Find all dropdown items and click the one at specified index
+                                            dropdown_selectors = [
+                                                "li",
+                                                "[role='option']",
+                                                ".react-autosuggest__suggestion",
+                                                ".autocomplete-result-item"
+                                            ]
+
+                                            for selector in dropdown_selectors:
+                                                items = await page.query_selector_all(selector)
+                                                if items and 0 <= int(selected_index) < len(items):
+                                                    await items[int(selected_index)].click()
+                                                    logger.info(f"Clicked dropdown item at index {selected_index}")
+                                                    success = True
+                                                    break
+                                        except Exception as e:
+                                            logger.warning(
+                                                f"Error selecting dropdown item at index {selected_index}: {str(e)}")
+
+                                    # If we couldn't select by index, try finding a matching result
+                                    if not success:
+                                        result_selectors = [
+                                            f"li:text('{naics_value}')",
+                                            f"[role='option']:text('{naics_value}')",
+                                            ".react-autosuggest__suggestion:first-child",
+                                            ".autocomplete-result-item:first-child",
+                                            "li:first-child"
+                                        ]
+
+                                        for selector in result_selectors:
+                                            try:
+                                                result = await page.query_selector(selector)
+                                                if result:
+                                                    await result.click()
+                                                    logger.info(f"Clicked result with selector: {selector}")
+                                                    success = True
+                                                    break
+                                            except Exception as e:
+                                                logger.debug(
+                                                    f"Error clicking result with selector {selector}: {str(e)}")
+
+                                    # If still no success, try keyboard navigation
+                                    if not success:
+                                        try:
+                                            await field_element.press("ArrowDown")
+                                            await page.wait_for_timeout(500)
+                                            await field_element.press("Enter")
+                                            logger.info("Used keyboard navigation to select result")
+                                            success = True
+                                        except Exception as e:
+                                            logger.warning(f"Error using keyboard navigation: {str(e)}")
+
+                                        # If still no success, try just tabbing out
+                                        if not success:
+                                            try:
+                                                await field_element.press("Tab")
+                                                logger.info("Pressed Tab to confirm entry")
+                                                success = True
+                                            except Exception as e:
+                                                logger.warning(f"Error pressing Tab: {str(e)}")
+                                else:
+                                    logger.warning("Could not find NAICS field element")
                             except Exception as e:
-                                logger.warning(f"Error pressing Tab: {str(e)}")
+                                logger.warning(f"Error applying NAICS value: {str(e)}")
 
                         # Take screenshot after handling
-                        await self.lca_filer.screenshot_manager.take_screenshot(page, "after_naics_code_handling")
+                        await self.lca_filer.screenshot_manager.take_screenshot(
+                            page, "after_naics_code_handling")
 
                         # Remove the interaction result
                         del self.interaction_results[filing_id]
-                        return True
+
+                        # Return success if any method worked, otherwise still consider it a success if we at least filled the field
+                        return success or True
                     else:
                         logger.warning("No NAICS code value found in interaction results")
                 else:
