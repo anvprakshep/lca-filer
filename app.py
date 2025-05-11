@@ -32,7 +32,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 # Global LCA filer instance (will be initialized in before_first_request)
 lca_filer = None
-interactive_filer = None
+interactive_filer: InteractiveFiler | None = None
 
 # Async event loop for running async code with Flask
 loop = asyncio.new_event_loop()
@@ -185,7 +185,10 @@ class InteractionManager:
                         "message": "Continuing process after human interaction"
                     })
 
+                logger.info(self.interaction_queue)
+
                 # Remove from queue
+                self.interaction_queue[filing_id].clear()
                 del self.interaction_queue[filing_id]
                 return True
 

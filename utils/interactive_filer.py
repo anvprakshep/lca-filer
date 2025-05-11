@@ -84,7 +84,7 @@ class InteractiveFiler:
         """
         logger.info(f"Received interaction result for filing {filing_id}")
         self.interaction_results[filing_id] = interaction_result
-        self.interaction_completed.set()
+        self.interaction_completed.clear()
 
     async def _apply_interaction_results(self, page, form_filler, interaction_result: Dict[str, Any]) -> None:
         """
@@ -1272,7 +1272,8 @@ class InteractiveFiler:
 
     async def handle_naics_code_field(self, page, form_filler, application_data=None):
         """
-        Enhanced handler for the NAICS Code field that preserves element references.
+        Enhanced handler for the NAICS Code field that preserves element references
+        and properly applies user selections from the dropdown.
 
         Args:
             page: Playwright page
@@ -1375,7 +1376,6 @@ class InteractiveFiler:
                                 for item_selector in item_selectors:
                                     full_selector = f"{container_selector} {item_selector}"
                                     list_items = await page.query_selector_all(full_selector)
-                                    print("items", list_items)
                                     if list_items and len(list_items) > 0:
                                         for i, item in enumerate(list_items):
                                             item_text = await item.text_content()
@@ -1383,17 +1383,46 @@ class InteractiveFiler:
                                             if item_text and item_text.strip():
                                                 text = item_text.strip()
 
-                                                # Add result data
-                                                results.append({
-                                                    "code": text,
-                                                    "description": "",
-                                                    "text": text,
-                                                    "index": i,
-                                                    "selector": f"{full_selector}:nth-child({i + 1})"
-                                                })
+                                                # Add result data with precise selector
+                                                result_selector = f"{full_selector}:nth-child({i + 1})"
+
+                                                # Store exact selector for later use
+                                                result_selectors.append(result_selector)
+
+                                                # Extract code and description if possible
+                                                code_match = None
+                                                description = ""
+
+                                                # Try to extract NAICS code (6 digits) if present
+                                                import re
+                                                code_match = re.search(r'\b(\d{6})\b', text)
+
+                                                if code_match:
+                                                    code = code_match.group(1)
+                                                    # The description is everything after the code
+                                                    description_parts = text.split(code, 1)
+                                                    if len(description_parts) > 1:
+                                                        description = description_parts[1].strip(" -:")
+
+                                                    results.append({
+                                                        "code": code,
+                                                        "description": description,
+                                                        "text": text,
+                                                        "index": i,
+                                                        "selector": result_selector
+                                                    })
+                                                else:
+                                                    # No code found, use the whole text
+                                                    results.append({
+                                                        "code": text,
+                                                        "description": "",
+                                                        "text": text,
+                                                        "index": i,
+                                                        "selector": result_selector
+                                                    })
 
                                         if results:
-                                            print(results, "results from search")
+                                            logger.info(f"Found {len(results)} NAICS search results")
                                             break  # We've found results, no need to try other item selectors
 
                                 if results:
@@ -1406,11 +1435,14 @@ class InteractiveFiler:
                         page, f"naics_search_results_{search_term}")
 
                     # Return both the results and the selectors for the elements
-                    return results
+                    return {
+                        "results": results,
+                        "result_selectors": result_selectors
+                    }
 
                 except Exception as e:
                     logger.error(f"Error fetching NAICS search results: {str(e)}")
-                    return []
+                    return {"results": [], "result_selectors": []}
 
             # Prepare field data for interaction
             field_data = {
@@ -1461,10 +1493,11 @@ class InteractiveFiler:
                 self.interaction_callback(filing_id, field_data)
 
                 # Wait for interaction
-                logger.info("Waiting for human input on NAICS code field")
+                logger.info("Waiting for human input on NAICS code field for filing: ", filing_id)
                 await self.interaction_completed.wait()
                 self.filing_paused = False
-
+                logger.info("Interaction complete: ", filing_id)
+                logger.info(self.interaction_results)
                 # Apply the interaction result
                 if filing_id in self.interaction_results:
                     interaction_result = self.interaction_results[filing_id]
@@ -1473,7 +1506,8 @@ class InteractiveFiler:
                     naics_value = None
                     selected_index = None
                     selected_selector = None
-
+                    logger.info(f"Interaction result: {interaction_result}")
+                    logger.info(f"Interaction result items: {interaction_result.items()}")
                     # Get the main field value
                     for key, value in interaction_result.items():
                         if field_id in key and not key.endswith('_index') and not key.endswith(
@@ -1500,130 +1534,213 @@ class InteractiveFiler:
                         await self.lca_filer.screenshot_manager.take_screenshot(
                             page, f"naics_before_apply_{naics_value}")
 
-                        # Try different strategies to apply the selection
+                        # Define a success flag to track if we succeeded
                         success = False
 
-                        # Strategy 1: If we have a selector for the specific result, try to use it
-                        if selected_selector:
+                        # IMPROVED: Multi-strategy approach to select the NAICS code,
+                        # prioritizing the selector provided by the user
+
+                        # Strategy 1: Use the exact selector from the user selection
+                        if selected_selector and not success:
                             try:
-                                # Try to find and click the element using the stored selector
+                                logger.info(f"Attempting to use exact selector: {selected_selector}")
+
+                                # First, make sure the dropdown is visible by clicking and entering the value
+                                await naics_field.click()
+                                await naics_field.fill("")
+                                await naics_field.fill(naics_value)
+                                await page.wait_for_timeout(1000)  # Wait for dropdown
+
+                                # Now try to find and click the result with the exact selector
                                 result_element = await page.query_selector(selected_selector)
                                 if result_element:
-                                    await result_element.click()
-                                    logger.info(f"Clicked result using stored selector: {selected_selector}")
-                                    success = True
-                            except Exception as e:
-                                logger.warning(f"Error clicking result with stored selector: {str(e)}")
+                                    # Take screenshot of the element before clicking
+                                    await self.lca_filer.screenshot_manager.take_element_screenshot(
+                                        page, result_element, f"naics_result_element_{naics_value}")
 
-                        # Strategy 2: If we have the field element, try filling and using index to select
+                                    # Click the result
+                                    await result_element.click()
+                                    logger.info(
+                                        f"Successfully clicked result using exact selector: {selected_selector}")
+
+                                    # Wait for any updates to process
+                                    await page.wait_for_timeout(1000)
+
+                                    # Verify the field now contains the value
+                                    current_value = await naics_field.input_value()
+                                    if current_value:
+                                        logger.info(f"Field now contains value: {current_value}")
+                                        success = True
+                            except Exception as e:
+                                logger.warning(f"Error using exact selector: {str(e)}")
+                                await self.lca_filer.screenshot_manager.take_screenshot(
+                                    page, "naics_selector_click_error")
+
+                        # Strategy 2: Use the index to select from dropdown items
+                        if selected_index is not None and not success:
+                            try:
+                                logger.info(f"Attempting to use index: {selected_index}")
+
+                                # Make sure the dropdown is visible
+                                await naics_field.click()
+                                await naics_field.fill("")
+                                await naics_field.fill(naics_value)
+                                await page.wait_for_timeout(1000)
+
+                                # Try multiple selector patterns for dropdown items
+                                dropdown_selector_patterns = [
+                                    "li",
+                                    "[role='option']",
+                                    ".react-autosuggest__suggestion",
+                                    ".autocomplete-result-item",
+                                    ".dropdown-item",
+                                    "[role='listbox'] > *"
+                                ]
+
+                                for pattern in dropdown_selector_patterns:
+                                    try:
+                                        logger.info(f"Searching for dropdown items using pattern: {pattern}")
+                                        items = await page.query_selector_all(pattern)
+
+                                        if items and 0 <= int(selected_index) < len(items):
+                                            # Take screenshot before clicking
+                                            await self.lca_filer.screenshot_manager.take_screenshot(
+                                                page, f"naics_dropdown_items_{pattern}")
+
+                                            # Click the selected item
+                                            target_item = items[int(selected_index)]
+                                            await target_item.click()
+
+                                            logger.info(
+                                                f"Clicked dropdown item at index {selected_index} using pattern {pattern}")
+                                            await page.wait_for_timeout(1000)
+
+                                            # Verify the field was updated
+                                            current_value = await naics_field.input_value()
+                                            if current_value:
+                                                logger.info(f"Field now contains value: {current_value}")
+                                                success = True
+                                                break
+                                    except Exception as e:
+                                        logger.debug(f"Error with pattern {pattern}: {str(e)}")
+                                        continue
+
+                                if not success:
+                                    logger.warning(f"Could not click dropdown item at index {selected_index}")
+                            except Exception as e:
+                                logger.warning(f"Error using index selection: {str(e)}")
+                                await self.lca_filer.screenshot_manager.take_screenshot(
+                                    page, "naics_index_selection_error")
+
+                        # Strategy 3: Find element by text content
                         if not success:
                             try:
-                                # Get the field element (from pending interaction or find it again)
-                                field_element = field_data.get("field_element")
+                                logger.info(f"Attempting to find element by text content: {naics_value}")
 
-                                # Check if element is still valid
-                                is_detached = False
-                                try:
-                                    is_detached = await field_element.is_detached()
-                                except Exception:
-                                    is_detached = True
+                                # Make sure the dropdown is visible
+                                await naics_field.click()
+                                await naics_field.fill("")
+                                await naics_field.fill(naics_value)
+                                await page.wait_for_timeout(1000)
 
-                                if is_detached:
-                                    logger.warning("Field element is detached, trying to find it again")
+                                # Try to find by text content
+                                text_selectors = [
+                                    f"li:has-text('{naics_value}')",
+                                    f"[role='option']:has-text('{naics_value}')",
+                                    f".react-autosuggest__suggestion:has-text('{naics_value}')",
+                                    f"//*[contains(text(), '{naics_value}') and (self::li or @role='option')]"
+                                ]
 
-                                    # Try to find using the saved selector
-                                    field_selector = field_data.get("field_selector")
-                                    if field_selector:
-                                        field_element = await page.query_selector(field_selector)
+                                for selector in text_selectors:
+                                    try:
+                                        result = await page.query_selector(selector)
+                                        if result:
+                                            # Take screenshot before clicking
+                                            await self.lca_filer.screenshot_manager.take_screenshot(
+                                                page, f"naics_text_match_{selector}")
 
-                                    # If still not found, try standard selectors
-                                    if not field_element:
-                                        field_element = await page.query_selector(f"#{field_id}, [name='{field_id}']")
+                                            # Click the element
+                                            await result.click()
+                                            logger.info(f"Clicked result matching text: {naics_value}")
+                                            await page.wait_for_timeout(1000)
 
-                                if field_element:
-                                    # Clear and fill the field
-                                    await field_element.click()
-                                    await field_element.fill("")
-                                    await field_element.fill(naics_value)
-                                    await page.wait_for_timeout(1000)  # Wait for dropdown
-
-                                    # If we have an index, try to select that specific item
-                                    if selected_index is not None:
-                                        try:
-                                            # Find all dropdown items and click the one at specified index
-                                            dropdown_selectors = [
-                                                "li",
-                                                "[role='option']",
-                                                ".react-autosuggest__suggestion",
-                                                ".autocomplete-result-item"
-                                            ]
-
-                                            for selector in dropdown_selectors:
-                                                items = await page.query_selector_all(selector)
-                                                if items and 0 <= int(selected_index) < len(items):
-                                                    await items[int(selected_index)].click()
-                                                    logger.info(f"Clicked dropdown item at index {selected_index}")
-                                                    success = True
-                                                    break
-                                        except Exception as e:
-                                            logger.warning(
-                                                f"Error selecting dropdown item at index {selected_index}: {str(e)}")
-
-                                    # If we couldn't select by index, try finding a matching result
-                                    if not success:
-                                        result_selectors = [
-                                            f"li:text('{naics_value}')",
-                                            f"[role='option']:text('{naics_value}')",
-                                            ".react-autosuggest__suggestion:first-child",
-                                            ".autocomplete-result-item:first-child",
-                                            "li:first-child"
-                                        ]
-
-                                        for selector in result_selectors:
-                                            try:
-                                                result = await page.query_selector(selector)
-                                                if result:
-                                                    await result.click()
-                                                    logger.info(f"Clicked result with selector: {selector}")
-                                                    success = True
-                                                    break
-                                            except Exception as e:
-                                                logger.debug(
-                                                    f"Error clicking result with selector {selector}: {str(e)}")
-
-                                    # If still no success, try keyboard navigation
-                                    if not success:
-                                        try:
-                                            await field_element.press("ArrowDown")
-                                            await page.wait_for_timeout(500)
-                                            await field_element.press("Enter")
-                                            logger.info("Used keyboard navigation to select result")
-                                            success = True
-                                        except Exception as e:
-                                            logger.warning(f"Error using keyboard navigation: {str(e)}")
-
-                                        # If still no success, try just tabbing out
-                                        if not success:
-                                            try:
-                                                await field_element.press("Tab")
-                                                logger.info("Pressed Tab to confirm entry")
+                                            # Verify the field was updated
+                                            current_value = await naics_field.input_value()
+                                            if current_value:
+                                                logger.info(f"Field now contains value: {current_value}")
                                                 success = True
-                                            except Exception as e:
-                                                logger.warning(f"Error pressing Tab: {str(e)}")
-                                else:
-                                    logger.warning("Could not find NAICS field element")
+                                                break
+                                    except Exception as e:
+                                        logger.debug(f"Error with text selector {selector}: {str(e)}")
+                                        continue
                             except Exception as e:
-                                logger.warning(f"Error applying NAICS value: {str(e)}")
+                                logger.warning(f"Error finding by text content: {str(e)}")
+                                await self.lca_filer.screenshot_manager.take_screenshot(
+                                    page, "naics_text_content_error")
+
+                        # Strategy 4: Use keyboard navigation
+                        if not success:
+                            try:
+                                logger.info("Attempting keyboard navigation")
+
+                                # Ensure the field is active
+                                await naics_field.click()
+                                await naics_field.fill("")
+                                await naics_field.fill(naics_value)
+                                await page.wait_for_timeout(1000)
+
+                                # Press arrow down to activate the first item and then enter to select
+                                await naics_field.press("ArrowDown")
+                                await page.wait_for_timeout(500)
+                                await naics_field.press("Enter")
+
+                                # Verify the field was updated
+                                await page.wait_for_timeout(1000)
+                                current_value = await naics_field.input_value()
+                                if current_value:
+                                    logger.info(f"Field now contains value after keyboard navigation: {current_value}")
+                                    success = True
+                            except Exception as e:
+                                logger.warning(f"Error with keyboard navigation: {str(e)}")
+                                await self.lca_filer.screenshot_manager.take_screenshot(
+                                    page, "naics_keyboard_navigation_error")
+
+                        # Strategy 5: As a last resort, directly set the value and tab out
+                        if not success:
+                            try:
+                                logger.info("Using direct value setting as last resort")
+
+                                await naics_field.click()
+                                await naics_field.fill("")
+                                await naics_field.fill(naics_value)
+                                await page.wait_for_timeout(500)
+                                await naics_field.press("Tab")
+
+                                logger.info("Used Tab key to confirm direct entry")
+                                current_value = await naics_field.input_value()
+                                if current_value:
+                                    logger.info(f"Field now contains value after direct entry: {current_value}")
+                                    success = True
+                            except Exception as e:
+                                logger.warning(f"Error with direct value setting: {str(e)}")
+                                await self.lca_filer.screenshot_manager.take_screenshot(
+                                    page, "naics_direct_entry_error")
 
                         # Take screenshot after handling
                         await self.lca_filer.screenshot_manager.take_screenshot(
                             page, "after_naics_code_handling")
 
+                        # Log results for debugging
+                        if success:
+                            logger.info("Successfully applied NAICS code selection")
+                        else:
+                            logger.warning("Failed to apply NAICS code selection through automatic methods")
+
                         # Remove the interaction result
                         del self.interaction_results[filing_id]
 
-                        # Return success if any method worked, otherwise still consider it a success if we at least filled the field
-                        return success or True
+                        # Return success status
+                        return success
                     else:
                         logger.warning("No NAICS code value found in interaction results")
                 else:
